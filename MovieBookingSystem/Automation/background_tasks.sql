@@ -1,5 +1,8 @@
 USE MovieBookingDB;
 
+DROP EVENT IF EXISTS cancel_expired_bookings;
+DROP EVENT IF EXISTS cleanup_old_logs;
+
 -- Enable the Event Scheduler
 SET GLOBAL event_scheduler = ON;
 

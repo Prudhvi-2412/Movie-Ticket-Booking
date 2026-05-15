@@ -14,7 +14,7 @@ FROM (
     JOIN bookings b ON s.show_id = b.show_id
     JOIN payments p ON b.booking_id = p.booking_id
     WHERE b.status = 'Confirmed'
-    GROUP BY m.movie_id
+    GROUP BY m.movie_id, m.genre, m.title
 ) AS genre_sales;
 
 -- 2. Running Total of Daily Revenue

@@ -1,5 +1,12 @@
 USE MovieBookingDB;
 
+DROP PROCEDURE IF EXISTS BookTicket;
+DROP PROCEDURE IF EXISTS CancelBooking;
+DROP PROCEDURE IF EXISTS GetAvailableSeats;
+DROP PROCEDURE IF EXISTS ProcessPayment;
+DROP PROCEDURE IF EXISTS UpdateDynamicPrice;
+DROP PROCEDURE IF EXISTS RegisterUser;
+
 DELIMITER //
 
 -- 1. Procedure to Book Tickets with Transaction Management
@@ -16,7 +23,17 @@ BEGIN
         RESIGNAL;
     END;
 
+    DECLARE v_seat_list TEXT;
+    DECLARE v_seat_id INT;
+    DECLARE v_next_pos INT;
+
     START TRANSACTION;
+
+    SET v_seat_list = REPLACE(p_seat_ids, ' ', '');
+
+    IF v_seat_list IS NULL OR v_seat_list = '' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'At least one seat ID is required.';
+    END IF;
 
     -- Check if any of the requested seats are already booked for this show
     -- This is a simplified check for the demo
@@ -24,8 +41,8 @@ BEGIN
         SELECT 1 FROM booking_seats bs
         JOIN bookings b ON bs.booking_id = b.booking_id
         WHERE b.show_id = p_show_id 
-        AND FIND_IN_SET(bs.seat_id, p_seat_ids)
-        AND b.status = 'Confirmed'
+        AND FIND_IN_SET(bs.seat_id, v_seat_list)
+        AND b.status IN ('Pending', 'Confirmed')
     ) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'One or more seats are already booked.';
     END IF;
@@ -36,9 +53,31 @@ BEGIN
     
     SET @new_booking_id = LAST_INSERT_ID();
 
-    -- In a real scenario, we would parse p_seat_ids. 
-    -- For demonstration, we'll assume the logic for multi-seat insertion exists.
-    -- (Complex parsing is usually handled by app logic or a helper loop)
+    -- Insert each requested seat into booking_seats.
+    seat_loop: WHILE v_seat_list <> '' DO
+        SET v_next_pos = LOCATE(',', v_seat_list);
+
+        IF v_next_pos = 0 THEN
+            SET v_seat_id = CAST(v_seat_list AS UNSIGNED);
+            SET v_seat_list = '';
+        ELSE
+            SET v_seat_id = CAST(LEFT(v_seat_list, v_next_pos - 1) AS UNSIGNED);
+            SET v_seat_list = SUBSTRING(v_seat_list, v_next_pos + 1);
+        END IF;
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM seats s
+            JOIN shows sh ON s.screen_id = sh.screen_id
+            WHERE sh.show_id = p_show_id
+              AND s.seat_id = v_seat_id
+        ) THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'One or more seats do not belong to the selected show.';
+        END IF;
+
+        INSERT INTO booking_seats (booking_id, seat_id)
+        VALUES (@new_booking_id, v_seat_id);
+    END WHILE seat_loop;
 
     COMMIT;
 END //
@@ -67,7 +106,7 @@ BEGIN
         SELECT bs.seat_id 
         FROM booking_seats bs
         JOIN bookings b ON bs.booking_id = b.booking_id
-        WHERE b.show_id = p_show_id AND b.status = 'Confirmed'
+        WHERE b.show_id = p_show_id AND b.status IN ('Pending', 'Confirmed')
     );
 END //
 
@@ -93,16 +132,14 @@ END //
 CREATE PROCEDURE UpdateDynamicPrice(IN p_show_id INT)
 BEGIN
     DECLARE v_occupancy_pct DECIMAL(5,2);
-    DECLARE v_base_price DECIMAL(10,2);
     
-    -- Get current occupancy percentage from our view
+    -- Get current occupancy percentage for the specific show from the view
     SELECT occupancy_percentage INTO v_occupancy_pct 
     FROM theater_occupancy 
-    WHERE show_time > NOW() AND occupancy_percentage IS NOT NULL -- Simplified for specific show
-    LIMIT 1; 
+    WHERE show_id = p_show_id;
 
     -- If occupancy > 80%, increase price by 15%
-    IF v_occupancy_pct > 80 THEN
+    IF v_occupancy_pct IS NOT NULL AND v_occupancy_pct > 80 THEN
         UPDATE shows 
         SET price = price * 1.15 
         WHERE show_id = p_show_id;

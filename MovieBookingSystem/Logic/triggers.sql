@@ -1,9 +1,14 @@
 USE MovieBookingDB;
 
+DROP TRIGGER IF EXISTS after_booking_update;
+DROP TRIGGER IF EXISTS before_show_insert;
+DROP TRIGGER IF EXISTS after_payment_insert;
+DROP TRIGGER IF EXISTS after_booking_seats_insert;
+
 DELIMITER //
 
 -- 1. Trigger to log booking changes
-CREATE TABLE booking_logs (
+CREATE TABLE IF NOT EXISTS booking_logs (
     log_id INT AUTO_INCREMENT PRIMARY KEY,
     booking_id INT,
     old_status VARCHAR(50),
@@ -47,7 +52,7 @@ BEGIN
 END //
 
 -- 4. Trigger to log seat booking for analytics
-CREATE TABLE seat_booking_logs (
+CREATE TABLE IF NOT EXISTS seat_booking_logs (
     log_id INT AUTO_INCREMENT PRIMARY KEY,
     booking_id INT,
     seat_id INT,

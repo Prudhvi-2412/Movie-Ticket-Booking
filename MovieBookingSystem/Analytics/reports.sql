@@ -19,7 +19,7 @@ SELECT
     COUNT(b.booking_id) AS booking_count
 FROM users u
 JOIN bookings b ON u.user_id = b.user_id
-GROUP BY u.user_id
+GROUP BY u.user_id, u.full_name
 ORDER BY booking_count DESC;
 
 -- 4. Revenue Grouped by Theater
@@ -32,7 +32,7 @@ JOIN shows s ON sc.screen_id = s.screen_id
 JOIN bookings b ON s.show_id = b.show_id
 JOIN payments p ON b.booking_id = p.booking_id
 WHERE b.status = 'Confirmed'
-GROUP BY t.theater_id;
+GROUP BY t.theater_id, t.name;
 
 -- 5. Theater occupancy details
 SELECT * FROM theater_occupancy WHERE occupancy_percentage > 50;

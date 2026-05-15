@@ -21,14 +21,14 @@ The system follows a highly normalized structure (up to 3NF) to ensure data redu
 
 ### Second Normal Form (2NF)
 - All non-key attributes are fully functional dependent on the primary key.
-- Example: `Movie_Title` and `Duration` are moved to `movies` table rather than being repeated in `shows`.
+- Example: `title` and `duration_minutes` are stored in `movies` rather than being repeated in `shows`.
 
 ### Third Normal Form (3NF)
 - No transitive dependencies.
 - Example: `Theater_Address` is in the `theaters` table. In the `screens` table, we only store `theater_id`. We don't store the address in `screens` or `shows`.
 
 ## 3. DBMS Concepts Applied
-- **Referential Integrity**: Enforced via `FOREIGN KEY` with `ON DELETE CASCADE/SET NULL`.
+- **Referential Integrity**: Enforced via `FOREIGN KEY` with `ON DELETE CASCADE` where defined; a few reporting/junction tables are handled at the application layer because of partitioning limitations.
 - **Concurrency Control**: Handled via `START TRANSACTION` and `COMMIT/ROLLBACK` in booking procedures to prevent double-booking.
 - **Data Integrity**: `CHECK` constraints for ratings and pricing.
 - **Performance**: `INDEX` on frequently searched columns like `show_time` and `movie_id`.

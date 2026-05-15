@@ -16,17 +16,22 @@ erDiagram
         int user_id PK
         string full_name
         string email
-        string phone
+        string phone_encrypted
         string password_hash
+        json preferences
+        boolean is_active
     }
 
     MOVIES {
         int movie_id PK
         string title
+        string description
         string genre
         string language
-        int duration
+        int duration_minutes
+        date release_date
         decimal rating
+        boolean is_active
     }
 
     THEATERS {
@@ -65,6 +70,7 @@ erDiagram
         int show_id FK
         decimal total_amount
         enum status
+        datetime booking_time
     }
 
     BOOKING_SEATS {
@@ -75,9 +81,10 @@ erDiagram
     PAYMENTS {
         int payment_id PK
         int booking_id FK
-        enum method
+        enum payment_method
         string transaction_id
         decimal amount
-        enum status
+        enum payment_status
+        timestamp payment_time
     }
 ```

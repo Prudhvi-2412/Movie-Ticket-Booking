@@ -1,5 +1,8 @@
 USE MovieBookingDB;
 
+DROP FUNCTION IF EXISTS CalculateLoyaltyDiscount;
+DROP FUNCTION IF EXISTS GetScreenStatus;
+
 DELIMITER //
 
 -- 1. Function to Calculate Loyalty Discount
@@ -38,9 +41,11 @@ BEGIN
 
     SELECT occupancy_percentage INTO v_pct 
     FROM theater_occupancy 
-    WHERE show_time > NOW() LIMIT 1; -- Simplified
+    WHERE show_id = p_show_id;
 
-    IF v_pct >= 90 THEN
+    IF v_pct IS NULL THEN
+        SET v_status = 'AVAILABLE';
+    ELSEIF v_pct >= 90 THEN
         SET v_status = 'HOUSEFULL';
     ELSEIF v_pct >= 50 THEN
         SET v_status = 'FILLING FAST';

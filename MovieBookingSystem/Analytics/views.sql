@@ -3,6 +3,7 @@ USE MovieBookingDB;
 -- 1. View for Revenue by Movie (Excluding inactive movies)
 CREATE OR REPLACE VIEW movie_revenue AS
 SELECT 
+  m.movie_id,
     m.title AS movie_title,
     SUM(p.amount) AS total_revenue,
     COUNT(b.booking_id) AS total_bookings
@@ -13,11 +14,12 @@ JOIN payments p ON b.booking_id = p.booking_id
 WHERE b.status = 'Confirmed' 
   AND p.payment_status = 'Success'
   AND m.is_active = TRUE -- Soft Delete Filter
-GROUP BY m.movie_id;
+GROUP BY m.movie_id, m.title;
 
 -- 2. View for Theater Occupancy (Excluding inactive theaters)
 CREATE OR REPLACE VIEW theater_occupancy AS
 SELECT 
+  s.show_id,
     t.name AS theater_name,
     m.title AS movie_title,
     s.show_time,
