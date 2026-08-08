@@ -4,17 +4,16 @@ import { Navbar } from '../components/Navbar';
 import { Footer } from '../components/Footer';
 import { MovieCard } from '../components/MovieCard';
 import { BannerCarousel } from '../components/BannerCarousel';
-import { Film, Filter, Zap, Lock, Cpu, Database } from 'lucide-react';
+import { Film, SlidersHorizontal } from 'lucide-react';
 
 export const HomePage = () => {
   const [movies, setMovies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedGenre, setSelectedGenre] = useState('');
-  const [selectedLanguage, setSelectedLanguage] = useState('');
+  const [selectedGenre, setSelectedGenre] = useState('All');
+  const [selectedLanguage, setSelectedLanguage] = useState('All');
 
-  const genres = ['All', 'Action', 'Sci-Fi', 'Biography', 'Thriller', 'Drama', 'Romance'];
-  const languages = ['All', 'English', 'Hindi', 'Telugu', 'Tamil'];
+  const genres = ['All', 'Action', 'Sci-Fi', 'Biography', 'Thriller', 'Drama'];
 
   useEffect(() => {
     fetchMovies();
@@ -47,79 +46,58 @@ export const HomePage = () => {
   });
 
   return (
-    <div className="min-h-screen bg-[#0b0f19] text-gray-100 flex flex-col">
+    <div className="min-h-screen bg-[#0D1117] text-[#F0F6FC] flex flex-col selection:bg-[#FF0055] selection:text-white">
+      
+      {/* Navbar */}
       <Navbar searchQuery={searchQuery} setSearchQuery={setSearchQuery} />
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-6 pt-6">
-        {/* Banner Carousel for Top Movie */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 md:px-8 pt-6">
+        
+        {/* Hero Spotlight Carousel */}
         {movies.length > 0 && <BannerCarousel movie={movies[0]} />}
 
-        {/* Distributed Architecture Live Banner */}
-        <div className="glass-panel p-4 mb-8 border border-red-500/20 bg-gradient-to-r from-slate-900 via-red-950/20 to-slate-900 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-red-600/20 border border-red-500/40 flex items-center justify-center">
-              <Zap className="w-5 h-5 text-red-500 animate-pulse" />
-            </div>
-            <div>
-              <span className="text-xs font-bold uppercase tracking-wider text-red-400">Distributed Lock & Messaging Architecture</span>
-              <p className="text-xs text-gray-300">Redis TTL Seat Locks • Apache Kafka Events • MySQL ACID Transactions</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-3 text-xs text-gray-400">
-            <span className="flex items-center gap-1"><Lock className="w-3.5 h-3.5 text-amber-400" /> Realtime TTL Lock</span>
-            <span className="flex items-center gap-1"><Cpu className="w-3.5 h-3.5 text-purple-400" /> Kafka Async Worker</span>
-            <span className="flex items-center gap-1"><Database className="w-3.5 h-3.5 text-blue-400" /> Partitioned MySQL</span>
-          </div>
-        </div>
-
-        {/* Filter Controls */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
+        {/* Filter Bar & Now Showing Title */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8 mt-4">
           <div>
-            <h2 className="text-2xl font-bold text-white flex items-center gap-2">
-              <Film className="w-6 h-6 text-red-500" /> Now Showing Movies
+            <h2 className="text-3xl font-black text-white tracking-tight flex items-center gap-3">
+              <Film className="w-7 h-7 text-[#FF0055]" /> Now Showing Movies
             </h2>
-            <p className="text-xs text-gray-400">Explore movies and lock your preferred cinema seats</p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-2 bg-slate-900/80 px-3 py-1.5 rounded-xl border border-slate-800 text-xs">
-              <Filter className="w-3.5 h-3.5 text-gray-400" />
-              <span className="text-gray-400">Genre:</span>
-              <select
-                value={selectedGenre}
-                onChange={(e) => setSelectedGenre(e.target.value)}
-                className="bg-transparent text-gray-200 font-semibold focus:outline-none cursor-pointer"
-              >
-                {genres.map(g => <option key={g} value={g} className="bg-slate-900">{g}</option>)}
-              </select>
+          {/* Genre Filter Pills */}
+          <div className="flex flex-wrap items-center gap-2.5 glass-slate-card p-2 rounded-2xl border border-[#30363D]">
+            <div className="flex items-center gap-2 text-xs text-[#8B949E] px-2 font-semibold">
+              <SlidersHorizontal className="w-3.5 h-3.5 text-[#FF0055]" /> Genre:
             </div>
-
-            <div className="flex items-center gap-2 bg-slate-900/80 px-3 py-1.5 rounded-xl border border-slate-800 text-xs">
-              <span className="text-gray-400">Language:</span>
-              <select
-                value={selectedLanguage}
-                onChange={(e) => setSelectedLanguage(e.target.value)}
-                className="bg-transparent text-gray-200 font-semibold focus:outline-none cursor-pointer"
+            {genres.map(g => (
+              <button
+                key={g}
+                onClick={() => setSelectedGenre(g)}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                  selectedGenre === g
+                    ? 'bg-gradient-to-r from-[#FF0055] to-[#FF5202] text-white shadow-crimson-glow'
+                    : 'text-[#8B949E] hover:text-white hover:bg-white/5'
+                }`}
               >
-                {languages.map(l => <option key={l} value={l} className="bg-slate-900">{l}</option>)}
-              </select>
-            </div>
+                {g}
+              </button>
+            ))}
           </div>
         </div>
 
         {/* Movie Grid */}
         {loading ? (
-          <div className="py-20 flex flex-col items-center justify-center gap-3">
-            <div className="w-10 h-10 border-4 border-red-600 border-t-transparent rounded-full animate-spin"></div>
-            <span className="text-xs text-gray-400 font-mono">Fetching Movies...</span>
+          <div className="py-24 flex flex-col items-center justify-center gap-3">
+            <div className="w-12 h-12 border-4 border-[#FF0055] border-t-transparent rounded-full animate-spin shadow-crimson-glow"></div>
+            <span className="text-xs text-[#8B949E] font-mono tracking-wider">LOADING MOVIES...</span>
           </div>
         ) : filteredMovies.length === 0 ? (
-          <div className="glass-panel py-16 text-center text-gray-400">
-            <p className="text-lg font-bold">No movies found</p>
-            <p className="text-xs text-gray-500 mt-1">Try adjusting your filters or search query.</p>
+          <div className="glass-slate-card py-20 text-center text-[#8B949E]">
+            <p className="text-xl font-bold text-white">No movies match your search</p>
+            <p className="text-xs text-[#8B949E] mt-1">Try selecting 'All' or searching for another title.</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-7">
             {filteredMovies.map(movie => (
               <MovieCard key={movie.movie_id} movie={movie} />
             ))}
@@ -127,6 +105,7 @@ export const HomePage = () => {
         )}
       </main>
 
+      {/* Footer */}
       <Footer />
     </div>
   );
