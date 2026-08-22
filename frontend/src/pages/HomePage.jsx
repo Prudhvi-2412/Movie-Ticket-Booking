@@ -1,112 +1,194 @@
-import React, { useState, useEffect } from 'react';
-import { api } from '../services/api';
-import { Navbar } from '../components/Navbar';
-import { Footer } from '../components/Footer';
-import { MovieCard } from '../components/MovieCard';
-import { BannerCarousel } from '../components/BannerCarousel';
-import { Film, SlidersHorizontal } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { MapPin, Building2, ArrowRight, Film, Sparkles } from 'lucide-react';
+import { api, buildQuery, isAbortError } from '../lib/api';
+import { useLocationContext } from '../context/LocationContext';
+import { HeroCarousel } from '../components/movie/HeroCarousel';
+import { MovieRow } from '../components/movie/MovieRow';
+import { Button, EmptyState, Skeleton, ErrorState } from '../components/ui';
 
-export const HomePage = () => {
-  const [movies, setMovies] = useState([]);
+export function HomePage() {
+  const { locationId, city, openPicker, loading: locationsLoading } = useLocationContext();
+
+  const [data, setData] = useState({ nowShowing: [], comingSoon: [], topRated: [], popular: [], theatres: [] });
   const [loading, setLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedGenre, setSelectedGenre] = useState('All');
-  const [selectedLanguage, setSelectedLanguage] = useState('All');
-
-  const genres = ['All', 'Action', 'Sci-Fi', 'Biography', 'Thriller', 'Drama'];
+  const [error, setError] = useState(null);
 
   useEffect(() => {
-    fetchMovies();
-  }, [selectedGenre, selectedLanguage]);
-
-  const fetchMovies = async () => {
-    setLoading(true);
-    try {
-      let query = '/movies?';
-      if (selectedGenre && selectedGenre !== 'All') query += `genre=${selectedGenre}&`;
-      if (selectedLanguage && selectedLanguage !== 'All') query += `language=${selectedLanguage}&`;
-      if (searchQuery) query += `search=${searchQuery}&`;
-
-      const res = await api.get(query);
-      if (res.success) {
-        setMovies(res.movies);
-      }
-    } catch (err) {
-      console.error('Error fetching movies:', err);
-    } finally {
+    // Nothing is meaningful before a city is chosen; the picker opens itself.
+    if (!locationId) {
       setLoading(false);
+      return undefined;
     }
-  };
 
-  const filteredMovies = movies.filter(m => {
-    if (!searchQuery) return true;
-    return m.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-           m.genre.toLowerCase().includes(searchQuery.toLowerCase()) ||
-           m.language.toLowerCase().includes(searchQuery.toLowerCase());
-  });
+    const controller = new AbortController();
+    const opts = { signal: controller.signal, auth: false };
+
+    setLoading(true);
+    setError(null);
+
+    Promise.all([
+      api.get(`/movies${buildQuery({ locationId, status: 'NowShowing' })}`, opts),
+      api.get(`/movies${buildQuery({ locationId, status: 'ComingSoon' })}`, opts),
+      api.get(`/movies${buildQuery({ locationId, sort: 'rating' })}`, opts),
+      api.get(`/movies${buildQuery({ locationId, sort: 'popular' })}`, opts),
+      api.get(`/theatres${buildQuery({ locationId })}`, opts)
+    ])
+      .then(([nowShowing, comingSoon, topRated, popular, theatres]) => {
+        setData({
+          nowShowing: nowShowing.movies || [],
+          comingSoon: comingSoon.movies || [],
+          topRated: (topRated.movies || []).filter((m) => m.status === 'NowShowing').slice(0, 12),
+          popular: (popular.movies || []).filter((m) => Number(m.booking_count) > 0).slice(0, 12),
+          theatres: theatres.theatres || []
+        });
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (isAbortError(err)) return;
+        setError(err);
+        setLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [locationId]);
+
+  if (!locationId && !locationsLoading) {
+    return (
+      <div className="page py-24">
+        <EmptyState
+          icon={MapPin}
+          title="Choose your city to get started"
+          message="CineWave shows movies, theatres and showtimes for the city you're in. Pick one and we'll take it from there."
+          action={<Button onClick={openPicker} icon={MapPin}>Select your city</Button>}
+        />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="page py-16">
+        <ErrorState
+          title="We couldn't load what's showing"
+          message={error.message}
+          onRetry={() => window.location.reload()}
+        />
+      </div>
+    );
+  }
+
+  const nothingShowing = !loading && data.nowShowing.length === 0 && data.comingSoon.length === 0;
 
   return (
-    <div className="min-h-screen bg-[#0D1117] text-[#F0F6FC] flex flex-col selection:bg-[#FF0055] selection:text-white">
-      
-      {/* Navbar */}
-      <Navbar searchQuery={searchQuery} setSearchQuery={setSearchQuery} />
+    <div className="page py-6 sm:py-8">
+      <HeroCarousel movies={data.nowShowing} loading={loading || locationsLoading} city={city} />
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 md:px-8 pt-6">
-        
-        {/* Hero Spotlight Carousel */}
-        {movies.length > 0 && <BannerCarousel movie={movies[0]} />}
+      <div className="mt-10">
+        {nothingShowing ? (
+          <EmptyState
+            icon={Film}
+            title={`No movies are showing in ${city} yet`}
+            message="We haven't scheduled any shows for this city. Try another city, or check back soon."
+            action={<Button variant="secondary" onClick={openPicker}>Change city</Button>}
+          />
+        ) : (
+          <>
+            <MovieRow
+              title="Now showing"
+              subtitle={city ? `Playing in ${city} right now` : undefined}
+              movies={data.nowShowing}
+              loading={loading}
+              viewAllTo="/movies?status=NowShowing"
+            />
 
-        {/* Filter Bar & Now Showing Title */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8 mt-4">
+            {(loading || data.popular.length > 0) && (
+              <MovieRow
+                title="Popular this week"
+                subtitle="What everyone else is booking"
+                movies={data.popular}
+                loading={loading}
+                viewAllTo="/movies?sort=popular"
+              />
+            )}
+
+            <MovieRow
+              title="Top rated"
+              subtitle="Highest rated films on CineWave"
+              movies={data.topRated}
+              loading={loading}
+              viewAllTo="/movies?sort=rating"
+            />
+
+            <MovieRow
+              title="Coming soon"
+              subtitle="Releasing over the next few weeks"
+              movies={data.comingSoon}
+              loading={loading}
+              viewAllTo="/movies?status=ComingSoon"
+              emptyMessage="No upcoming releases announced yet."
+            />
+          </>
+        )}
+      </div>
+
+      {/* Nearby theatres */}
+      <section className="mb-6">
+        <div className="flex items-end justify-between gap-4 mb-4">
           <div>
-            <h2 className="text-3xl font-black text-white tracking-tight flex items-center gap-3">
-              <Film className="w-7 h-7 text-[#FF0055]" /> Now Showing Movies
-            </h2>
+            <h2 className="section-title">Theatres in {city}</h2>
+            <p className="section-subtitle mt-0.5">Cinemas near you with shows on sale</p>
           </div>
-
-          {/* Genre Filter Pills */}
-          <div className="flex flex-wrap items-center gap-2.5 glass-slate-card p-2 rounded-2xl border border-[#30363D]">
-            <div className="flex items-center gap-2 text-xs text-[#8B949E] px-2 font-semibold">
-              <SlidersHorizontal className="w-3.5 h-3.5 text-[#FF0055]" /> Genre:
-            </div>
-            {genres.map(g => (
-              <button
-                key={g}
-                onClick={() => setSelectedGenre(g)}
-                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                  selectedGenre === g
-                    ? 'bg-gradient-to-r from-[#FF0055] to-[#FF5202] text-white shadow-crimson-glow'
-                    : 'text-[#8B949E] hover:text-white hover:bg-white/5'
-                }`}
-              >
-                {g}
-              </button>
-            ))}
-          </div>
+          <Link to="/theatres" className="text-xs font-semibold text-brand-400 hover:text-brand-500 flex items-center gap-1">
+            See all <ArrowRight className="w-3.5 h-3.5" aria-hidden />
+          </Link>
         </div>
 
-        {/* Movie Grid */}
         {loading ? (
-          <div className="py-24 flex flex-col items-center justify-center gap-3">
-            <div className="w-12 h-12 border-4 border-[#FF0055] border-t-transparent rounded-full animate-spin shadow-crimson-glow"></div>
-            <span className="text-xs text-[#8B949E] font-mono tracking-wider">LOADING MOVIES...</span>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-32 rounded-2xl" />)}
           </div>
-        ) : filteredMovies.length === 0 ? (
-          <div className="glass-slate-card py-20 text-center text-[#8B949E]">
-            <p className="text-xl font-bold text-white">No movies match your search</p>
-            <p className="text-xs text-[#8B949E] mt-1">Try selecting 'All' or searching for another title.</p>
-          </div>
+        ) : data.theatres.length === 0 ? (
+          <p className="text-sm text-ink-400">No theatres listed in {city} yet.</p>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-7">
-            {filteredMovies.map(movie => (
-              <MovieCard key={movie.movie_id} movie={movie} />
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {data.theatres.slice(0, 6).map((theatre) => (
+              <Link
+                key={theatre.theater_id}
+                to={`/theatres/${theatre.theater_id}`}
+                className="surface surface-hover p-5 group"
+              >
+                <div className="flex items-start gap-3">
+                  <span className="w-10 h-10 rounded-xl bg-brand-500/12 border border-brand-500/25
+                                   grid place-items-center shrink-0">
+                    <Building2 className="w-5 h-5 text-brand-400" aria-hidden />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <h3 className="font-semibold text-sm text-ink-50 truncate group-hover:text-brand-400 transition-colors">
+                      {theatre.name}
+                    </h3>
+                    <p className="text-xs text-ink-400 mt-0.5 truncate">{theatre.location}, {theatre.city}</p>
+                    <p className="text-2xs text-ink-500 mt-2 tabular">
+                      {theatre.screen_count} screen{Number(theatre.screen_count) === 1 ? '' : 's'} ·{' '}
+                      {theatre.seat_capacity} seats
+                    </p>
+                  </div>
+                </div>
+
+                {theatre.facilities?.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mt-4">
+                    {theatre.facilities.slice(0, 3).map((f) => (
+                      <span key={f} className="badge-neutral !normal-case !tracking-normal !font-medium">
+                        <Sparkles className="w-2.5 h-2.5" aria-hidden /> {f}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </Link>
             ))}
           </div>
         )}
-      </main>
-
-      {/* Footer */}
-      <Footer />
+      </section>
     </div>
   );
-};
+}

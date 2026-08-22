@@ -40,7 +40,10 @@ const publishEvent = async (topic, event) => {
     data: event.data
   };
 
-  logger.info(' Publishing Event [%s] -> %s: %j', topic, event.eventType, payload);
+  // Log the envelope, not the body: event data carries user ids and amounts,
+  // and %j of the whole payload put that in every log line.
+  logger.info('Event published [%s] %s (%s)', topic, payload.eventType, payload.eventId);
+  logger.debug('Event payload %s: %j', payload.eventId, payload.data);
 
   // Always emit on local bus for consumers
   localBus.emit(topic, payload);
@@ -58,6 +61,19 @@ const publishEvent = async (topic, event) => {
   }
 };
 
+const shutdownKafka = async () => {
+  if (isKafkaConnected && kafkaProducer) {
+    try {
+      await kafkaProducer.disconnect();
+      logger.info('Kafka producer disconnected.');
+    } catch (err) {
+      logger.warn('Error disconnecting Kafka producer: %s', err.message);
+    }
+  }
+  isKafkaConnected = false;
+  localBus.removeAllListeners();
+};
+
 module.exports = {
   kafka,
   initKafkaProducer,
@@ -65,5 +81,6 @@ module.exports = {
   subscribeEvent: (topic, handler) => {
     localBus.on(topic, handler);
   },
-  isKafkaConnected: () => isKafkaConnected
+  isKafkaConnected: () => isKafkaConnected,
+  shutdownKafka
 };

@@ -6,7 +6,12 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "test": "jest --runInBand --detectOpenHandles"
+    "db:migrate": "node scripts/migrate.js",
+    "db:seed": "node scripts/seed.js",
+    "db:reset": "node scripts/migrate.js && node scripts/seed.js --force",
+    "db:setup": "node scripts/migrate.js && node scripts/seed.js",
+    "test": "jest --runInBand --detectOpenHandles --forceExit",
+    "verify": "node scripts/verifyFlow.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

@@ -1,143 +1,219 @@
-@tailwindcss base;
-@tailwindcss components;
-@tailwindcss utilities;
+/* Fonts are loaded from index.html — see the comment there for why. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-:root {
-  --bg-obsidian: #0D1117;
-  --bg-container: #161B22;
-  --bg-card: #21262D;
-  --border-slate: #30363D;
-  
-  --crimson-electric: #FF0055;
-  --crimson-pulse: #FF5202;
-  --cyber-gold: #FFD700;
-  --cyber-cyan: #00E5FF;
-  
-  --font-family: 'Outfit', 'Plus Jakarta Sans', sans-serif;
-}
+@layer base {
+  * {
+    @apply border-ink-700;
+  }
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
+  html {
+    scroll-behavior: smooth;
+    -webkit-tap-highlight-color: transparent;
+  }
 
-body {
-  background-color: var(--bg-obsidian);
-  color: #F0F6FC;
-  font-family: var(--font-family);
-  min-height: 100vh;
-  overflow-x: hidden;
-  line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
-}
+  body {
+    @apply bg-ink-950 text-ink-50 font-sans antialiased;
+    /* Prevent the layout shifting horizontally when a modal locks scroll. */
+    overflow-x: hidden;
+  }
 
-/* Custom Slate Scrollbar */
-::-webkit-scrollbar {
-  width: 6px;
-}
-::-webkit-scrollbar-track {
-  background: #0D1117;
-}
-::-webkit-scrollbar-thumb {
-  background: #30363D;
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #FF0055;
+  /* A visible, consistent focus ring everywhere — keyboard users should never
+     have to guess where they are. :focus-visible keeps it off mouse clicks. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand-500/70 ring-offset-2 ring-offset-ink-950 rounded-md;
+  }
+
+  ::selection {
+    @apply bg-brand-500/30 text-white;
+  }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { @apply bg-ink-900; }
+  ::-webkit-scrollbar-thumb { @apply bg-ink-700 rounded-full border-2 border-ink-900; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-ink-600; }
+
+  /* Respect a user's reduced-motion preference rather than animating anyway. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }
 
-/* Frosted Glass Slate Containers */
-.glass-slate-card {
-  background: rgba(33, 38, 45, 0.75);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid #30363D;
-  border-radius: 24px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+@layer components {
+  /* ---- Surfaces ---------------------------------------------------- */
+  .surface {
+    @apply bg-ink-850 border border-ink-700/70 rounded-2xl;
+  }
+
+  .surface-raised {
+    @apply bg-ink-800 border border-ink-700 rounded-2xl shadow-card;
+  }
+
+  .surface-hover {
+    @apply transition-all duration-300 ease-smooth hover:border-ink-600 hover:shadow-lift;
+  }
+
+  /* ---- Typography -------------------------------------------------- */
+  .section-title {
+    @apply text-xl sm:text-2xl font-bold tracking-tight text-ink-50;
+  }
+
+  .section-subtitle {
+    @apply text-sm text-ink-300;
+  }
+
+  .label {
+    @apply block text-xs font-semibold uppercase tracking-wide text-ink-300 mb-1.5;
+  }
+
+  .eyebrow {
+    @apply text-2xs font-bold uppercase tracking-[0.14em] text-brand-400;
+  }
+
+  /* ---- Buttons ----------------------------------------------------- */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl font-semibold
+           transition-all duration-200 ease-smooth select-none
+           disabled:opacity-45 disabled:cursor-not-allowed disabled:pointer-events-none
+           whitespace-nowrap;
+  }
+
+  .btn-sm { @apply text-xs px-3 py-2; }
+  .btn-md { @apply text-sm px-4 py-2.5; }
+  .btn-lg { @apply text-base px-6 py-3.5; }
+
+  .btn-primary {
+    @apply btn bg-gradient-to-r from-brand-500 to-ember-500 text-white
+           shadow-brand hover:brightness-110 active:brightness-95 active:scale-[0.985];
+  }
+
+  .btn-secondary {
+    @apply btn bg-ink-800 text-ink-100 border border-ink-600
+           hover:bg-ink-700 hover:border-ink-500 active:scale-[0.985];
+  }
+
+  .btn-ghost {
+    @apply btn text-ink-300 hover:text-ink-50 hover:bg-ink-800/80;
+  }
+
+  .btn-danger {
+    @apply btn bg-negative-500/15 text-negative-400 border border-negative-500/40
+           hover:bg-negative-500/25 active:scale-[0.985];
+  }
+
+  /* ---- Forms ------------------------------------------------------- */
+  .input {
+    @apply w-full bg-ink-900 border border-ink-600 rounded-xl px-3.5 py-2.5
+           text-sm text-ink-50 placeholder:text-ink-400
+           transition-colors duration-200
+           focus:border-brand-500 focus:ring-1 focus:ring-brand-500/40 focus:outline-none
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .input-error {
+    @apply border-negative-500/70 focus:border-negative-500 focus:ring-negative-500/40;
+  }
+
+  .field-error {
+    @apply text-xs text-negative-400 mt-1.5 flex items-center gap-1;
+  }
+
+  select.input {
+    @apply appearance-none bg-no-repeat pr-9;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%239AA2B5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
+    background-position: right 0.75rem center;
+  }
+
+  /* ---- Badges ------------------------------------------------------ */
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1
+           text-2xs font-bold uppercase tracking-wide border;
+  }
+
+  .badge-neutral  { @apply badge bg-ink-800 text-ink-300 border-ink-600; }
+  .badge-brand    { @apply badge bg-brand-500/15 text-brand-400 border-brand-500/35; }
+  .badge-positive { @apply badge bg-positive-500/15 text-positive-400 border-positive-500/35; }
+  .badge-caution  { @apply badge bg-caution-500/15 text-caution-400 border-caution-500/35; }
+  .badge-negative { @apply badge bg-negative-500/15 text-negative-400 border-negative-500/35; }
+  .badge-info     { @apply badge bg-info-500/15 text-info-400 border-info-500/35; }
+
+  /* ---- Skeletons --------------------------------------------------- */
+  .skeleton {
+    @apply relative overflow-hidden bg-ink-800 rounded-lg;
+  }
+
+  .skeleton::after {
+    content: '';
+    @apply absolute inset-0 -translate-x-full;
+    background-image: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0) 0,
+      rgba(255, 255, 255, 0.04) 20%,
+      rgba(255, 255, 255, 0.08) 60%,
+      rgba(255, 255, 255, 0)
+    );
+    animation: shimmer 1.8s infinite;
+  }
+
+  /* ---- Tables ------------------------------------------------------ */
+  .table-wrap {
+    @apply overflow-x-auto rounded-2xl border border-ink-700 bg-ink-850;
+  }
+
+  .data-table {
+    @apply w-full text-sm text-left border-collapse;
+  }
+
+  .data-table thead th {
+    @apply bg-ink-900 text-2xs font-bold uppercase tracking-wide text-ink-300
+           px-4 py-3 border-b border-ink-700 whitespace-nowrap;
+  }
+
+  .data-table tbody td {
+    @apply px-4 py-3 border-b border-ink-800 text-ink-200 align-middle;
+  }
+
+  .data-table tbody tr:last-child td { @apply border-b-0; }
+  .data-table tbody tr { @apply transition-colors hover:bg-ink-800/50; }
+
+  /* ---- Layout utilities -------------------------------------------- */
+  .page {
+    @apply mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8;
+  }
+
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+  /* Fade the edges of a horizontal scroller so it reads as continuing. */
+  .scroll-fade-x {
+    mask-image: linear-gradient(to right, transparent, black 12px, black calc(100% - 12px), transparent);
+  }
 }
 
-.glass-slate-nav {
-  background: rgba(13, 17, 23, 0.85);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  border-bottom: 1px solid rgba(255, 0, 85, 0.25);
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
+@layer utilities {
+  .text-gradient {
+    @apply bg-gradient-to-r from-brand-400 via-brand-500 to-ember-500 bg-clip-text text-transparent;
+  }
+
+  .tabular { font-variant-numeric: tabular-nums; }
 }
 
-.glass-slate-pill {
-  background: rgba(255, 255, 255, 0.04);
-  backdrop-filter: blur(12px);
-  border: 1px solid #30363D;
-}
-
-/* Electric Crimson Gradient Buttons */
-.btn-electric-crimson {
-  background: linear-gradient(135deg, #FF0055 0%, #FF5202 100%);
-  color: white;
-  padding: 12px 28px;
-  border-radius: 14px;
-  font-weight: 700;
-  font-size: 0.95rem;
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  box-shadow: 0 0 30px rgba(255, 0, 85, 0.45);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  position: relative;
-  overflow: hidden;
-}
-
-.btn-electric-crimson:hover {
-  transform: translateY(-2px) scale(1.02);
-  box-shadow: 0 0 45px rgba(255, 0, 85, 0.75), 0 0 15px rgba(255, 82, 2, 0.8);
-}
-
-.btn-frosted-slate {
-  background: rgba(255, 255, 255, 0.05);
-  color: #F0F6FC;
-  padding: 12px 24px;
-  border-radius: 14px;
-  font-weight: 600;
-  border: 1px solid #30363D;
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  backdrop-filter: blur(16px);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.btn-frosted-slate:hover {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 0, 85, 0.5);
-  box-shadow: 0 0 20px rgba(255, 0, 85, 0.3);
-}
-
-/* Cyber Badges */
-.badge-crimson {
-  background: rgba(255, 0, 85, 0.15);
-  color: #FF0055;
-  border: 1px solid rgba(255, 0, 85, 0.4);
-  box-shadow: 0 0 12px rgba(255, 0, 85, 0.2);
-}
-
-.badge-gold {
-  background: rgba(255, 215, 0, 0.15);
-  color: #FFD700;
-  border: 1px solid rgba(255, 215, 0, 0.4);
-  box-shadow: 0 0 12px rgba(255, 215, 0, 0.2);
-}
-
-.badge-cyan {
-  background: rgba(0, 229, 255, 0.15);
-  color: #00E5FF;
-  border: 1px solid rgba(0, 229, 255, 0.4);
-  box-shadow: 0 0 12px rgba(0, 229, 255, 0.2);
-}
-
-.badge-emerald {
-  background: rgba(0, 245, 160, 0.15);
-  color: #00F5A0;
-  border: 1px solid rgba(0, 245, 160, 0.4);
-  box-shadow: 0 0 12px rgba(0, 245, 160, 0.2);
+/* ---- Print: the digital ticket has to survive being printed --------- */
+@media print {
+  body { background: #fff !important; color: #000 !important; }
+  .no-print { display: none !important; }
+  .print-plain,
+  .print-plain * {
+    background: #fff !important;
+    color: #000 !important;
+    border-color: #bbb !important;
+    box-shadow: none !important;
+  }
+  .print-full { max-width: 100% !important; padding: 0 !important; margin: 0 !important; }
 }

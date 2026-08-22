@@ -2,38 +2,43 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎬</text></svg>" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>CineWave - Distributed Movie Ticket Booking Platform</title>
-    <meta name="description" content="Production-Grade Full-Stack Movie Ticket Booking Platform with Redis Distributed Seat Locking, Kafka Event Bus, and Real-Time Seat Reservation." />
-    <!-- Tailwind CSS CDN -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-      tailwind.config = {
-        theme: {
-          extend: {
-            colors: {
-              brand: {
-                dark: '#0b0f19',
-                card: 'rgba(30, 41, 59, 0.7)',
-                red: '#e50914',
-                gold: '#f59e0b',
-              }
-            },
-            fontFamily: {
-              sans: ['Outfit', 'Plus Jakarta Sans', 'sans-serif'],
-            }
-          }
-        }
-      }
-    </script>
-    <!-- Google Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <meta name="theme-color" content="#08090D" />
+
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+
+    <title>CineWave — Book movie tickets</title>
+    <meta
+      name="description"
+      content="Book cinema tickets across India with CineWave. Live seat availability, seats held while you check out, and your ticket on your phone the moment you pay."
+    />
+
+    <!--
+      Fonts are preconnected and loaded here rather than @imported from CSS:
+      an @import inside the stylesheet is discovered a round trip later and
+      delays first paint of every text node on the page.
+    -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+
+    <!--
+      No Tailwind CDN script here. Tailwind is compiled at build time from
+      tailwind.config.js; loading the CDN as well shipped a second, differently
+      configured copy of the framework that raced the real stylesheet and
+      overrode the design tokens.
+    -->
   </head>
   <body>
     <div id="root"></div>
+    <noscript>
+      <p style="color:#F5F7FA;background:#08090D;font-family:sans-serif;padding:2rem;text-align:center">
+        CineWave needs JavaScript enabled to book tickets.
+      </p>
+    </noscript>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

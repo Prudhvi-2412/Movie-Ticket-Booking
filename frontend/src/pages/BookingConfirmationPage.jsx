@@ -1,97 +1,127 @@
-import React from 'react';
-import { useLocation, Link, useParams } from 'react-router-dom';
-import { Navbar } from '../components/Navbar';
-import { Footer } from '../components/Footer';
-import { CheckCircle2, Ticket, QrCode, Printer, Home, Sparkles, Cpu } from 'lucide-react';
+import { useEffect, useState, useCallback } from 'react';
+import { useParams, useNavigate, Link } from 'react-router-dom';
+import { CheckCircle2, Download, Ticket, Home, ListChecks } from 'lucide-react';
+import { api } from '../lib/api';
+import { formatCurrency, formatDate, formatTime } from '../lib/format';
+import { Button, LoadingBlock, ErrorState } from '../components/ui';
 
-export const BookingConfirmationPage = () => {
+export function BookingConfirmationPage() {
   const { bookingId } = useParams();
-  const location = useLocation();
+  const navigate = useNavigate();
 
-  const state = location.state || {};
-  const transactionId = state.transactionId || `TXN_${bookingId}_9988`;
-  const amount = state.amount || 700;
-  const seats = state.seats || [];
-  const showInfo = state.showInfo || {};
-  const paymentMethod = state.paymentMethod || 'UPI';
+  const [booking, setBooking] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await api.get(`/bookings/${bookingId}`);
+      setBooking(res.booking);
+      setError(null);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setLoading(false);
+    }
+  }, [bookingId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (loading) return <LoadingBlock label="Confirming your booking…" className="min-h-[60vh]" />;
+
+  if (error) {
+    return (
+      <div className="page py-16">
+        <ErrorState
+          title="Could not load your booking"
+          message={error.message}
+          onRetry={error.status === 404 ? undefined : load}
+        />
+      </div>
+    );
+  }
+
+  // Reaching this page for an unconfirmed booking means payment did not
+  // complete — send them back rather than showing a false success.
+  if (booking.status !== 'Confirmed') {
+    return (
+      <div className="page py-16">
+        <ErrorState
+          title="This booking isn't confirmed"
+          message={`It's currently ${booking.status.toLowerCase()}. If you were charged, it will be reversed automatically.`}
+          onRetry={undefined}
+        />
+        <div className="flex justify-center gap-3 mt-4">
+          <Button variant="secondary" onClick={() => navigate(`/payment/${bookingId}`)}>Try payment again</Button>
+          <Link to="/bookings" className="btn-ghost btn-md">My bookings</Link>
+        </div>
+      </div>
+    );
+  }
+
+  const rows = [
+    ['Booking ID', booking.booking_ref, true],
+    ['Movie', booking.movie_title],
+    ['Theatre', booking.theater_name],
+    ['Screen', booking.screen_name || `Screen ${booking.screen_number}`],
+    ['Date', formatDate(booking.show_time)],
+    ['Time', formatTime(booking.show_time)],
+    ['Seats', booking.seats?.map((s) => s.label).join(', ')],
+    ['Amount paid', formatCurrency(booking.total_amount, { precise: true })]
+  ];
 
   return (
-    <div className="min-h-screen bg-[#0b0f19] text-gray-100 flex flex-col">
-      <Navbar />
-
-      <main className="flex-1 max-w-3xl w-full mx-auto px-6 py-12">
-        <div className="glass-panel p-8 rounded-3xl border border-emerald-500/30 text-center space-y-6 shadow-2xl relative overflow-hidden">
-          <div className="w-16 h-16 bg-emerald-500/20 border-2 border-emerald-500 rounded-full flex items-center justify-center mx-auto text-emerald-400">
-            <CheckCircle2 className="w-10 h-10 animate-bounce" />
-          </div>
-
-          <div>
-            <span className="badge badge-green mb-2 inline-block">BOOKING CONFIRMED & AUDITED</span>
-            <h1 className="text-3xl font-black text-white">Ticket Reserved Successfully!</h1>
-            <p className="text-xs text-gray-400 mt-1">Kafka events published to Notification, Analytics, & Email Services.</p>
-          </div>
-
-          {/* Ticket Card Stub */}
-          <div className="bg-slate-900 border-2 border-dashed border-slate-700 p-6 rounded-2xl text-left space-y-4 relative">
-            <div className="flex justify-between items-start border-b border-slate-800 pb-4">
-              <div>
-                <span className="text-[10px] text-red-400 font-bold uppercase tracking-wider">CineWave M-Ticket</span>
-                <h2 className="text-xl font-bold text-white">{showInfo.movie_title || 'Movie Title'}</h2>
-                <p className="text-xs text-gray-400">{showInfo.theater_name || 'INOX Cinema'} • Screen 1</p>
-              </div>
-              <div className="text-right">
-                <span className="text-[10px] text-gray-500 block">BOOKING ID</span>
-                <span className="font-mono font-bold text-emerald-400 text-sm">#{bookingId}</span>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4 text-xs">
-              <div>
-                <span className="text-gray-500 block">Showtime:</span>
-                <span className="font-semibold text-gray-200">
-                  {showInfo.show_time ? new Date(showInfo.show_time).toLocaleString() : 'Today'}
-                </span>
-              </div>
-              <div>
-                <span className="text-gray-500 block">Reserved Seats:</span>
-                <span className="font-bold text-red-400 text-sm">
-                  {seats.length > 0 ? seats.map(s => `${s.seat_row}${s.seat_number}`).join(', ') : 'A1, A2'}
-                </span>
-              </div>
-              <div>
-                <span className="text-gray-500 block">Payment Method:</span>
-                <span className="font-semibold text-gray-200">{paymentMethod}</span>
-              </div>
-              <div>
-                <span className="text-gray-500 block">Transaction ID:</span>
-                <span className="font-mono text-gray-400 text-[11px]">{transactionId}</span>
-              </div>
-            </div>
-
-            <div className="pt-4 border-t border-slate-800 flex items-center justify-between">
-              <div>
-                <span className="text-xs text-gray-400 block">Total Amount Paid</span>
-                <span className="text-xl font-black text-emerald-400 font-mono">₹{amount}</span>
-              </div>
-
-              <div className="w-16 h-16 bg-white p-1 rounded-lg flex items-center justify-center">
-                <QrCode className="w-14 h-14 text-slate-950" />
-              </div>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center justify-center gap-4 pt-4">
-            <button onClick={() => window.print()} className="btn-secondary py-3 px-6 text-xs">
-              <Printer className="w-4 h-4" /> Print M-Ticket
-            </button>
-            <Link to="/" className="btn-primary py-3 px-6 text-xs">
-              <Home className="w-4 h-4" /> Back to Movies
-            </Link>
-          </div>
+    <div className="page py-10 max-w-2xl">
+      <div className="text-center mb-9">
+        <div className="w-16 h-16 rounded-2xl bg-positive-500/15 border border-positive-500/35
+                        grid place-items-center mx-auto mb-5 animate-scale-in">
+          <CheckCircle2 className="w-8 h-8 text-positive-400" aria-hidden />
         </div>
-      </main>
+        <h1 className="text-3xl font-extrabold tracking-tight">Booking confirmed</h1>
+        <p className="text-sm text-ink-400 mt-2.5 max-w-md mx-auto leading-relaxed">
+          Your seats are locked in. We've sent the details to{' '}
+          <span className="text-ink-200">your registered email</span> — and your
+          ticket is ready below.
+        </p>
+      </div>
 
-      <Footer />
+      <div className="surface p-6 mb-6">
+        <dl className="divide-y divide-ink-800">
+          {rows.map(([label, value, mono]) => (
+            <div key={label} className="flex items-baseline justify-between gap-4 py-3 first:pt-0 last:pb-0">
+              <dt className="text-xs uppercase tracking-wide text-ink-500 font-semibold shrink-0">{label}</dt>
+              <dd
+                className={`text-sm text-right ${
+                  mono ? 'font-mono font-bold text-brand-400' : 'font-medium text-ink-50'
+                } tabular`}
+              >
+                {value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+
+      <div className="grid sm:grid-cols-2 gap-3">
+        <Button size="lg" icon={Ticket} onClick={() => navigate(`/bookings/${bookingId}/ticket`)}>
+          View ticket
+        </Button>
+        <Button
+          variant="secondary"
+          size="lg"
+          icon={Download}
+          onClick={() => navigate(`/bookings/${bookingId}/ticket?print=1`)}
+        >
+          Download ticket
+        </Button>
+        <Link to="/bookings" className="btn-ghost btn-lg justify-center">
+          <ListChecks className="w-4 h-4" aria-hidden /> My bookings
+        </Link>
+        <Link to="/" className="btn-ghost btn-lg justify-center">
+          <Home className="w-4 h-4" aria-hidden /> Back to home
+        </Link>
+      </div>
     </div>
   );
-};
+}

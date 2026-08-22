@@ -1,32 +1,31 @@
-version: '3.8'
-
 services:
   # 1. MySQL Relational Database
   mysql:
     image: mysql:8.0
-    container_name: movie_booking_mysql
-    restart: always
+    container_name: cinewave_mysql
+    restart: unless-stopped
+    command: --default-authentication-plugin=mysql_native_password
     environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
-      MYSQL_DATABASE: MovieBookingDB
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: ${DB_NAME:-MovieBookingDB}
     ports:
-      - "3306:3306"
+      # Host port is configurable so it never collides with a locally installed MySQL.
+      - "${MYSQL_HOST_PORT:-3307}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./MovieBookingSystem/Schema/init_full_system.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${DB_PASSWORD:-rootpassword}"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
 
-  # 2. Redis Distributed Lock & Cache Cluster
+  # 2. Redis Distributed Lock & Cache
   redis:
     image: redis:7-alpine
-    container_name: movie_booking_redis
-    restart: always
+    container_name: cinewave_redis
+    restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "${REDIS_HOST_PORT:-6380}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -38,8 +37,8 @@ services:
   # 3. Zookeeper for Kafka Orchestration
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
-    container_name: movie_booking_zookeeper
-    restart: always
+    container_name: cinewave_zookeeper
+    restart: unless-stopped
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
@@ -47,27 +46,28 @@ services:
   # 4. Apache Kafka Event Broker
   kafka:
     image: confluentinc/cp-kafka:7.5.0
-    container_name: movie_booking_kafka
-    restart: always
+    container_name: cinewave_kafka
+    restart: unless-stopped
     depends_on:
       - zookeeper
     ports:
-      - "9092:9092"
+      - "${KAFKA_HOST_PORT:-9094}:29092"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:${KAFKA_HOST_PORT:-9094}
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
 
-  # 5. Node.js Backend API Microservice Gateway
+  # 5. Node.js Backend API
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: movie_booking_backend
-    restart: always
+    container_name: cinewave_backend
+    restart: unless-stopped
     depends_on:
       mysql:
         condition: service_healthy
@@ -76,32 +76,35 @@ services:
       kafka:
         condition: service_started
     ports:
-      - "5000:5000"
+      - "${BACKEND_HOST_PORT:-5000}:5000"
     environment:
       NODE_ENV: production
       PORT: 5000
       DB_HOST: mysql
       DB_PORT: 3306
-      DB_USER: root
-      DB_PASSWORD: rootpassword
-      DB_NAME: MovieBookingDB
+      DB_USER: ${DB_USER:-root}
+      DB_PASSWORD: ${DB_PASSWORD:-rootpassword}
+      DB_NAME: ${DB_NAME:-MovieBookingDB}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       KAFKA_BROKERS: kafka:9092
-      JWT_SECRET: super_secret_jwt_key_movie_booking_2026
-      JWT_REFRESH_SECRET: super_secret_refresh_jwt_key_2026
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET must be set}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?WEBHOOK_SECRET must be set}
+      # Run schema migration + seed on container start so the stack is usable immediately.
+      AUTO_MIGRATE: "true"
 
-  # 6. React Frontend Application (Nginx Static Serve & Proxy)
+  # 6. React Frontend (Nginx static serve + API proxy)
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: movie_booking_frontend
-    restart: always
+    container_name: cinewave_frontend
+    restart: unless-stopped
     depends_on:
       - backend
     ports:
-      - "3000:80"
+      - "${FRONTEND_HOST_PORT:-3000}:80"
 
 volumes:
   mysql_data:

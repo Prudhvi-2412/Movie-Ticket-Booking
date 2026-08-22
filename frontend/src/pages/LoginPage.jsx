@@ -1,107 +1,146 @@
-import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useState } from 'react';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { Ticket, LogIn, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { Film, Lock, Mail, ArrowRight, AlertCircle } from 'lucide-react';
+import { useToast } from '../context/ToastContext';
+import { Button, Field, Input } from '../components/ui';
 
-export const LoginPage = () => {
-  const [email, setEmail] = useState('aarav.sharma@example.com');
-  const [password, setPassword] = useState('password123');
-  const [errorMsg, setErrorMsg] = useState('');
-  const [loading, setLoading] = useState(false);
-
+export function LoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
+  const routerLocation = useLocation();
+  const toast = useToast();
 
-  const handleSubmit = async (e) => {
+  const [form, setForm] = useState({ email: '', password: '' });
+  const [errors, setErrors] = useState({});
+  const [formError, setFormError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  // Where the guard sent us from, so we can return there after signing in.
+  const redirectTo = routerLocation.state?.from?.pathname || '/';
+
+  const validate = () => {
+    const next = {};
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(form.email)) next.email = 'Enter a valid email address.';
+    if (!form.password) next.password = 'Enter your password.';
+    setErrors(next);
+    return Object.keys(next).length === 0;
+  };
+
+  const submit = async (e) => {
     e.preventDefault();
-    setLoading(true);
-    setErrorMsg('');
+    setFormError('');
+    if (!validate()) return;
+
+    setSubmitting(true);
     try {
-      const res = await login(email, password);
-      if (res.success) {
-        navigate(res.user.role === 'Admin' ? '/admin' : '/');
-      }
+      const user = await login(form.email.trim().toLowerCase(), form.password);
+      toast.success(`Welcome back, ${user.full_name.split(' ')[0]}.`);
+      // An admin signing in from the landing page belongs in the dashboard.
+      navigate(redirectTo === '/' && user.role === 'Admin' ? '/admin' : redirectTo, { replace: true });
     } catch (err) {
-      setErrorMsg(err.message || 'Login failed. Invalid credentials.');
+      setFormError(err.message || 'We could not sign you in. Please try again.');
     } finally {
-      setLoading(false);
+      setSubmitting(false);
     }
   };
 
+  const fillDemo = (email) => {
+    setForm({ email, password: email.startsWith('admin') ? 'Admin@123' : 'Customer@123' });
+    setErrors({});
+    setFormError('');
+  };
+
   return (
-    <div className="min-h-screen bg-[#0b0f19] flex items-center justify-center p-6 text-gray-100">
-      <div className="glass-panel p-8 md:p-10 rounded-3xl max-w-md w-full border border-slate-800 space-y-6 shadow-2xl">
-        <div className="text-center space-y-2">
-          <Link to="/" className="inline-flex items-center gap-2 mb-2">
-            <div className="w-10 h-10 rounded-xl bg-red-600 flex items-center justify-center">
-              <Film className="w-6 h-6 text-white" />
-            </div>
-            <span className="text-xl font-black text-white">CineWave</span>
+    <div className="min-h-[calc(100vh-4rem)] grid place-items-center px-4 py-12">
+      <div className="w-full max-w-md">
+        <div className="text-center mb-8">
+          <Link to="/" className="inline-flex items-center gap-2.5 mb-6">
+            <span className="w-11 h-11 rounded-xl bg-gradient-to-br from-brand-500 to-ember-500
+                             grid place-items-center shadow-brand">
+              <Ticket className="w-6 h-6 text-white" aria-hidden />
+            </span>
+            <span className="text-xl font-extrabold tracking-tight">
+              Cine<span className="text-gradient">Wave</span>
+            </span>
           </Link>
-          <h1 className="text-2xl font-bold text-white">Welcome Back</h1>
-          <p className="text-xs text-gray-400">Sign in to access seat reservations & ticket history</p>
+          <h1 className="text-2xl font-extrabold tracking-tight">Welcome back</h1>
+          <p className="text-sm text-ink-400 mt-1.5">Sign in to book tickets and view your bookings.</p>
         </div>
 
-        {errorMsg && (
-          <div className="p-3 rounded-xl bg-red-950/60 border border-red-500/50 text-red-300 text-xs flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
-            <span>{errorMsg}</span>
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-4 text-xs">
-          <div>
-            <label className="block text-gray-400 mb-1">Email Address</label>
-            <div className="relative">
-              <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500" />
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                className="w-full bg-slate-900/90 pl-10 pr-4 py-3 rounded-xl border border-slate-800 text-gray-200 focus:border-red-500 focus:outline-none"
-                placeholder="your.email@example.com"
-              />
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-gray-400 mb-1">Password</label>
-            <div className="relative">
-              <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500" />
-              <input
-                type="password"
-                required
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                className="w-full bg-slate-900/90 pl-10 pr-4 py-3 rounded-xl border border-slate-800 text-gray-200 focus:border-red-500 focus:outline-none"
-                placeholder="••••••••"
-              />
-            </div>
-          </div>
-
-          <div className="pt-2 flex flex-col gap-2">
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full btn-primary py-3.5 justify-center font-bold text-sm"
+        <form onSubmit={submit} className="surface p-6 space-y-5" noValidate>
+          {formError && (
+            <div
+              role="alert"
+              className="flex items-start gap-2.5 rounded-xl border border-negative-500/40
+                         bg-negative-500/10 p-3.5 text-sm text-negative-400"
             >
-              {loading ? 'Signing In...' : <span className="flex items-center gap-2">Sign In <ArrowRight className="w-4 h-4" /></span>}
-            </button>
-
-            <div className="flex gap-2 pt-2 text-[11px] text-gray-400 justify-center">
-              <span>Quick Login Credentials:</span>
-              <button type="button" onClick={() => { setEmail('aarav.sharma@example.com'); setPassword('password123'); }} className="text-red-400 hover:underline">Customer</button>
-              <span>•</span>
-              <button type="button" onClick={() => { setEmail('admin@moviebooking.com'); setPassword('Admin@123'); }} className="text-amber-400 hover:underline">Admin</button>
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden />
+              <span>{formError}</span>
             </div>
-          </div>
+          )}
+
+          <Field label="Email" required error={errors.email}>
+            <Input
+              type="email"
+              value={form.email}
+              onChange={(e) => setForm({ ...form, email: e.target.value })}
+              placeholder="you@example.com"
+              autoComplete="email"
+              autoFocus
+            />
+          </Field>
+
+          <Field label="Password" required error={errors.password}>
+            <Input
+              type="password"
+              value={form.password}
+              onChange={(e) => setForm({ ...form, password: e.target.value })}
+              placeholder="••••••••"
+              autoComplete="current-password"
+            />
+          </Field>
+
+          <Button type="submit" loading={submitting} size="lg" className="w-full justify-center" icon={LogIn}>
+            Sign in
+          </Button>
+
+          <p className="text-center text-sm text-ink-400">
+            New to CineWave?{' '}
+            <Link to="/register" className="text-brand-400 font-semibold hover:underline">
+              Create an account
+            </Link>
+          </p>
         </form>
 
-        <div className="text-center text-xs text-gray-400 border-t border-slate-800 pt-4">
-          Don't have an account? <Link to="/register" className="text-red-400 font-bold hover:underline">Register Now</Link>
-        </div>
+        {/*
+          Development conveniences. The seed script creates these accounts; in
+          a real deployment this block would be removed along with the seed.
+        */}
+        {import.meta.env.DEV && (
+          <div className="surface p-4 mt-4">
+            <p className="text-2xs uppercase tracking-wide text-ink-500 font-semibold mb-2.5">
+              Demo accounts
+            </p>
+            <div className="flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => fillDemo('admin@cinewave.com')}
+                className="text-left text-xs text-ink-300 hover:text-brand-400 transition-colors"
+              >
+                <span className="font-semibold">Admin</span> — admin@cinewave.com / Admin@123
+              </button>
+              <button
+                type="button"
+                onClick={() => fillDemo('aarav@example.com')}
+                className="text-left text-xs text-ink-300 hover:text-brand-400 transition-colors"
+              >
+                <span className="font-semibold">Customer</span> — aarav@example.com / Customer@123
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
-};
+}

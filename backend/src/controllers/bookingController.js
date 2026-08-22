@@ -1,189 +1,359 @@
 const db = require('../config/db');
-const { acquireSeatLocks, releaseSeatLocks } = require('../redis/seatLock');
-const { emitBookingCreated, emitBookingCancelled } = require('../kafka/producer');
+const config = require('../config/env');
+const {
+  acquireSeatLocks, verifySeatLocks, releaseSeatLocks, getRemainingLockSeconds
+} = require('../redis/seatLock');
+const { quote } = require('../services/pricingService');
+const { emitBookingCreated, emitBookingCancelled, emitSeatReleased } = require('../kafka/producer');
+const { ApiError, asyncHandler } = require('../utils/ApiError');
 const logger = require('../utils/logger');
 const { bookingCounter } = require('../utils/metrics');
 
-const lockSeats = async (req, res, next) => {
-  try {
-    const { showId, seatIds } = req.body;
-    const userId = req.user.userId;
+const BOOKING_SELECT = `
+  SELECT b.booking_id, b.booking_ref, b.user_id, b.show_id,
+         b.seat_amount, b.convenience_fee, b.tax_amount, b.discount_amount, b.total_amount,
+         b.status, b.expires_at, b.booking_time, b.confirmed_at, b.cancelled_at,
+         s.show_time, s.end_time,
+         m.movie_id, m.title AS movie_title, m.poster_url, m.language, m.certificate, m.duration_minutes,
+         sc.screen_number, sc.name AS screen_name, sc.screen_type,
+         t.theater_id, t.name AS theater_name, t.location AS theater_locality, t.address AS theater_address,
+         l.city,
+         p.transaction_id, p.payment_method, p.payment_status, p.payment_time
+    FROM bookings b
+    JOIN shows s     ON s.show_id = b.show_id
+    JOIN movies m    ON m.movie_id = s.movie_id
+    JOIN screens sc  ON sc.screen_id = s.screen_id
+    JOIN theaters t  ON t.theater_id = sc.theater_id
+    JOIN locations l ON l.location_id = t.location_id
+    LEFT JOIN payments p ON p.booking_id = b.booking_id AND p.payment_status = 'Success'
+`;
 
-    if (!showId || !Array.isArray(seatIds) || seatIds.length === 0) {
-      return res.status(400).json({ success: false, message: 'showId and array of seatIds are required' });
-    }
+/** Attaches the seat list to each booking in one extra query rather than N. */
+const attachSeats = async (bookings) => {
+  if (bookings.length === 0) return bookings;
 
-    const lockResult = await acquireSeatLocks(showId, seatIds, userId);
+  const ids = bookings.map((b) => b.booking_id);
+  const rows = await db.query(
+    `SELECT bs.booking_id, bs.seat_price, s.seat_id, s.seat_row, s.seat_number, s.seat_type
+       FROM booking_seats bs
+       JOIN seats s ON s.seat_id = bs.seat_id
+      WHERE bs.booking_id IN (${ids.map(() => '?').join(',')})
+      ORDER BY s.seat_row, s.seat_number`,
+    ids
+  );
 
-    if (!lockResult.success) {
-      return res.status(409).json(lockResult); // 409 Conflict
-    }
-
-    res.json({
-      success: true,
-      message: `Successfully locked ${seatIds.length} seat(s) for 10 minutes.`,
-      lock: lockResult
+  const byBooking = new Map(ids.map((id) => [id, []]));
+  for (const row of rows) {
+    byBooking.get(row.booking_id).push({
+      seat_id: row.seat_id,
+      seat_row: row.seat_row,
+      seat_number: row.seat_number,
+      seat_type: row.seat_type,
+      label: `${row.seat_row}${row.seat_number}`,
+      price: Number(row.seat_price)
     });
-  } catch (err) {
-    next(err);
   }
+
+  return bookings.map((b) => ({ ...b, seats: byBooking.get(b.booking_id) || [] }));
 };
 
-const createBooking = async (req, res, next) => {
-  const connection = await db.getConnection();
+/**
+ * POST /api/bookings/lock-seats
+ *
+ * Step one of checkout: take the distributed hold and return the *server's*
+ * price for the selection. The response carries the real Redis TTL, so the
+ * countdown the customer sees is the deadline that actually applies rather
+ * than a hardcoded ten minutes in the browser.
+ */
+const lockSeats = asyncHandler(async (req, res) => {
+  const { showId, seatIds } = req.body;
+  const userId = req.user.userId;
+
+  if (seatIds.length > config.MAX_SEATS_PER_BOOKING) {
+    throw ApiError.badRequest(`You can book at most ${config.MAX_SEATS_PER_BOOKING} seats at a time.`);
+  }
+
+  const shows = await db.query(
+    `SELECT show_id, show_time FROM shows
+      WHERE show_id = ? AND is_active = TRUE AND status = 'Scheduled' AND show_time > NOW()`,
+    [showId]
+  );
+  if (shows.length === 0) throw ApiError.gone('This show is no longer open for booking.');
+
+  // Price before locking so a pricing failure does not strand a held seat.
+  const { lines, summary } = await quote(showId, seatIds);
+
+  const lock = await acquireSeatLocks(showId, seatIds, userId);
+  if (!lock.success) {
+    return res.status(409).json({
+      success: false,
+      message: lock.message,
+      reason: lock.reason,
+      conflictSeats: lock.conflictSeats
+    });
+  }
+
+  return res.json({
+    success: true,
+    message: `${seatIds.length} seat(s) held for you.`,
+    hold: {
+      showId,
+      seatIds: lock.seatIds,
+      expiresInSeconds: lock.expiresInSeconds,
+      expiresAt: lock.lockedUntil
+    },
+    seats: lines,
+    summary
+  });
+});
+
+/**
+ * POST /api/bookings
+ *
+ * Step two: turn a live hold into a pending booking.
+ *
+ * Two things the old handler did not do. It never checked that the caller
+ * actually held the Redis locks, so a client could skip lock-seats entirely
+ * and book seats another customer was mid-checkout on. And it wrote
+ * `totalAmount` straight from the request body, so the price was whatever
+ * the client claimed. Both are fixed here: the hold is verified, and the
+ * total is recomputed server-side and passed to the CreateBooking procedure.
+ */
+const createBooking = asyncHandler(async (req, res) => {
+  const { showId, seatIds } = req.body;
+  const userId = req.user.userId;
+
+  if (seatIds.length > config.MAX_SEATS_PER_BOOKING) {
+    throw ApiError.badRequest(`You can book at most ${config.MAX_SEATS_PER_BOOKING} seats at a time.`);
+  }
+
+  const held = await verifySeatLocks(showId, seatIds, userId);
+  if (!held.valid) {
+    const expired = held.missing.filter((m) => m.reason === 'EXPIRED');
+    bookingCounter.inc({ status: 'failed' });
+    throw ApiError.conflict(
+      expired.length === held.missing.length
+        ? 'Your seat hold expired. Please select your seats again.'
+        : 'Some of those seats are now held by another customer. Please select again.',
+      { code: 'SEAT_HOLD_LOST', details: held.missing }
+    );
+  }
+
+  const { lines, summary } = await quote(showId, seatIds);
+  const remaining = await getRemainingLockSeconds(showId, seatIds);
+  if (remaining <= 0) {
+    throw ApiError.conflict('Your seat hold expired. Please select your seats again.', { code: 'SEAT_HOLD_LOST' });
+  }
+
+  const seatsJson = JSON.stringify(lines.map((l) => ({ seat_id: l.seat_id, price: l.price })));
+
+  let bookingId;
+  let bookingRef;
   try {
-    const { showId, seatIds, totalAmount } = req.body;
-    const userId = req.user.userId;
-
-    if (!showId || !Array.isArray(seatIds) || seatIds.length === 0) {
-      connection.release();
-      return res.status(400).json({ success: false, message: 'showId, seatIds, and totalAmount are required' });
-    }
-
-    // 1. ACID Transaction in MySQL
-    await connection.beginTransaction();
-
-    // Check if seats are already booked in MySQL
-    const placeholders = seatIds.map(() => '?').join(',');
-    const [existingBookings] = await connection.query(`
-      SELECT bs.seat_id
-      FROM booking_seats bs
-      JOIN bookings b ON bs.booking_id = b.booking_id
-      WHERE b.show_id = ? AND bs.seat_id IN (${placeholders}) AND b.status IN ('Confirmed', 'PaymentSuccess')
-    `, [showId, ...seatIds]);
-
-    if (existingBookings.length > 0) {
-      await connection.rollback();
-      connection.release();
-      bookingCounter.inc({ status: 'failed' });
-      return res.status(409).json({
-        success: false,
-        message: 'One or more requested seats are already permanently booked.'
+    await db.query(
+      'CALL CreateBooking(?, ?, CAST(? AS JSON), ?, ?, ?, @booking_id, @booking_ref)',
+      [userId, showId, seatsJson, summary.convenienceFee, config.GST_RATE, remaining]
+    );
+    const [out] = await db.query('SELECT @booking_id AS booking_id, @booking_ref AS booking_ref');
+    bookingId = out.booking_id;
+    bookingRef = out.booking_ref;
+  } catch (err) {
+    bookingCounter.inc({ status: 'failed' });
+    // Duplicate-key here means the uq_seat_occupancy index caught a seat that
+    // was committed between our lock check and this insert.
+    if (err.code === 'ER_DUP_ENTRY' || /just been taken/.test(err.message)) {
+      await releaseSeatLocks(showId, seatIds, userId);
+      throw ApiError.conflict('One or more of those seats were just booked by someone else.', {
+        code: 'SEAT_TAKEN'
       });
     }
+    if (err.sqlState === '45000') throw ApiError.badRequest(err.message);
+    throw err;
+  }
 
-    // Insert pending booking
-    const [bookingResult] = await connection.query(
-      'INSERT INTO bookings (user_id, show_id, total_amount, status) VALUES (?, ?, ?, ?)',
-      [userId, showId, totalAmount, 'Pending']
-    );
+  bookingCounter.inc({ status: 'pending' });
 
-    const bookingId = bookingResult.insertId;
+  await emitBookingCreated({
+    bookingId, bookingRef, userId, showId, seatIds, totalAmount: summary.totalAmount, status: 'Pending'
+  });
 
-    // Insert booking seats
-    for (const seatId of seatIds) {
-      await connection.query('INSERT INTO booking_seats (booking_id, seat_id) VALUES (?, ?)', [bookingId, seatId]);
-    }
+  logger.info('Booking %s created for user %s (show %s, %d seats)', bookingRef, userId, showId, seatIds.length);
 
-    await connection.commit();
-    connection.release();
-
-    bookingCounter.inc({ status: 'pending' });
-
-    // Emit event to Kafka
-    await emitBookingCreated({
+  res.status(201).json({
+    success: true,
+    message: 'Booking created. Complete payment to confirm your seats.',
+    booking: {
       bookingId,
-      userId,
+      bookingRef,
       showId,
-      seatIds,
-      totalAmount,
-      status: 'Pending'
-    });
+      status: 'Pending',
+      seats: lines,
+      summary,
+      expiresInSeconds: remaining
+    }
+  });
+});
 
-    res.status(201).json({
-      success: true,
-      message: 'Pending booking created successfully. Proceed to payment.',
-      booking: {
-        bookingId,
-        userId,
-        showId,
-        seatIds,
-        totalAmount,
-        status: 'Pending'
-      }
-    });
-  } catch (err) {
-    await connection.rollback();
-    connection.release();
-    next(err);
+/** GET /api/bookings/my — grouped into upcoming / completed / cancelled. */
+const getMyBookings = asyncHandler(async (req, res) => {
+  const { status } = req.query;
+
+  const filters = ['b.user_id = ?'];
+  const params = [req.user.userId];
+  if (status) { filters.push('b.status = ?'); params.push(status); }
+
+  const rows = await db.query(
+    `${BOOKING_SELECT} WHERE ${filters.join(' AND ')} ORDER BY b.booking_time DESC LIMIT 200`,
+    params
+  );
+  const bookings = await attachSeats(rows);
+
+  const now = Date.now();
+  const grouped = { upcoming: [], completed: [], cancelled: [] };
+  for (const booking of bookings) {
+    if (['Cancelled', 'Refunded', 'Expired', 'PaymentFailed'].includes(booking.status)) {
+      grouped.cancelled.push(booking);
+    } else if (booking.status === 'Confirmed' && new Date(booking.show_time).getTime() < now) {
+      grouped.completed.push(booking);
+    } else {
+      grouped.upcoming.push(booking);
+    }
   }
-};
 
-const cancelBooking = async (req, res, next) => {
-  try {
-    const bookingId = req.params.id;
-    const userId = req.user.userId;
+  res.json({ success: true, count: bookings.length, bookings, grouped });
+});
 
-    const bookings = await db.query('SELECT * FROM bookings WHERE booking_id = ?', [bookingId]);
-    if (bookings.length === 0) {
-      return res.status(404).json({ success: false, message: 'Booking not found' });
-    }
+/** GET /api/bookings/:id — owner or admin only. */
+const getBooking = asyncHandler(async (req, res) => {
+  const rows = await db.query(`${BOOKING_SELECT} WHERE b.booking_id = ?`, [req.params.id]);
+  if (rows.length === 0) throw ApiError.notFound('Booking not found.');
 
-    const booking = bookings[0];
-
-    // Verify ownership or admin role
-    if (booking.user_id !== userId && req.user.role !== 'Admin') {
-      return res.status(403).json({ success: false, message: 'Forbidden. You do not own this booking.' });
-    }
-
-    // Update status to Cancelled & Refund payments
-    await db.query('CALL CancelBooking(?)', [bookingId]);
-
-    // Fetch seats to release Redis locks
-    const seatRows = await db.query('SELECT seat_id FROM booking_seats WHERE booking_id = ?', [bookingId]);
-    const seatIds = seatRows.map(r => r.seat_id);
-
-    if (seatIds.length > 0) {
-      await releaseSeatLocks(booking.show_id, seatIds, userId);
-    }
-
-    bookingCounter.inc({ status: 'cancelled' });
-
-    await emitBookingCancelled({
-      bookingId,
-      userId: booking.user_id,
-      showId: booking.show_id,
-      seatIds
-    });
-
-    res.json({ success: true, message: 'Booking cancelled and refund initiated successfully.' });
-  } catch (err) {
-    next(err);
+  const booking = rows[0];
+  if (booking.user_id !== req.user.userId && req.user.role !== 'Admin') {
+    throw ApiError.forbidden('This booking belongs to another account.');
   }
-};
 
-const getUserBookings = async (req, res, next) => {
-  try {
-    const userId = req.user.userId;
+  const [withSeats] = await attachSeats([booking]);
 
-    const bookings = await db.query(`
-      SELECT b.booking_id, b.total_amount, b.status, b.booking_time,
-             s.show_id, s.show_time, s.price,
-             m.movie_id, m.title as movie_title, m.poster_url, m.language,
-             t.name as theater_name, t.city, sc.screen_number
-      FROM bookings b
-      JOIN shows s ON b.show_id = s.show_id
-      JOIN movies m ON s.movie_id = m.movie_id
-      JOIN screens sc ON s.screen_id = sc.screen_id
-      JOIN theaters t ON sc.theater_id = t.theater_id
-      WHERE b.user_id = ?
-      ORDER BY b.booking_time DESC
-    `, [userId]);
-
-    for (const b of bookings) {
-      const seats = await db.query(`
-        SELECT s.seat_id, s.seat_row, s.seat_number, s.seat_type
-        FROM booking_seats bs
-        JOIN seats s ON bs.seat_id = s.seat_id
-        WHERE bs.booking_id = ?
-      `, [b.booking_id]);
-      b.seats = seats;
-    }
-
-    res.json({ success: true, bookings });
-  } catch (err) {
-    next(err);
+  // Surface the live hold so a checkout page reloaded mid-flow shows the real
+  // remaining time instead of restarting its own timer.
+  let expiresInSeconds = null;
+  if (['Pending', 'PaymentProcessing'].includes(booking.status)) {
+    expiresInSeconds = await getRemainingLockSeconds(
+      booking.show_id, withSeats.seats.map((s) => s.seat_id)
+    );
   }
-};
 
-module.exports = { lockSeats, createBooking, cancelBooking, getUserBookings };
+  res.json({ success: true, booking: { ...withSeats, expiresInSeconds } });
+});
+
+/**
+ * POST /api/bookings/:id/cancel
+ * Confirmed bookings can be cancelled up to two hours before the show.
+ */
+const cancelBooking = asyncHandler(async (req, res) => {
+  const bookingId = req.params.id;
+
+  const rows = await db.query(
+    `SELECT b.*, s.show_time FROM bookings b JOIN shows s ON s.show_id = b.show_id
+      WHERE b.booking_id = ?`,
+    [bookingId]
+  );
+  if (rows.length === 0) throw ApiError.notFound('Booking not found.');
+
+  const booking = rows[0];
+  const isAdmin = req.user.role === 'Admin';
+  if (booking.user_id !== req.user.userId && !isAdmin) {
+    throw ApiError.forbidden('This booking belongs to another account.');
+  }
+
+  if (['Cancelled', 'Refunded', 'Expired'].includes(booking.status)) {
+    throw ApiError.badRequest('This booking has already been cancelled.');
+  }
+
+  const hoursUntilShow = (new Date(booking.show_time).getTime() - Date.now()) / 3_600_000;
+  if (!isAdmin && booking.status === 'Confirmed' && hoursUntilShow < 2) {
+    throw ApiError.badRequest('Bookings can only be cancelled up to 2 hours before showtime.');
+  }
+
+  const seatRows = await db.query(
+    'SELECT seat_id FROM booking_seats WHERE booking_id = ? AND is_active = 1',
+    [bookingId]
+  );
+  const seatIds = seatRows.map((r) => r.seat_id);
+
+  await db.query('CALL CancelBooking(?)', [bookingId]);
+  // Release without an owner filter: an admin cancelling on a customer's
+  // behalf must still be able to free the seats.
+  if (seatIds.length) await releaseSeatLocks(booking.show_id, seatIds);
+
+  bookingCounter.inc({ status: 'cancelled' });
+
+  await emitBookingCancelled({
+    bookingId: Number(bookingId), userId: booking.user_id, showId: booking.show_id, seatIds
+  });
+  await emitSeatReleased({ showId: booking.show_id, seatIds, reason: 'BOOKING_CANCELLED' });
+
+  const updated = await db.query('SELECT status FROM bookings WHERE booking_id = ?', [bookingId]);
+
+  res.json({
+    success: true,
+    message: updated[0].status === 'Refunded'
+      ? 'Booking cancelled. Your refund has been initiated.'
+      : 'Booking cancelled.',
+    status: updated[0].status
+  });
+});
+
+/** GET /api/bookings/:id/ticket — the digital ticket payload. */
+const getTicket = asyncHandler(async (req, res) => {
+  const rows = await db.query(`${BOOKING_SELECT} WHERE b.booking_id = ?`, [req.params.id]);
+  if (rows.length === 0) throw ApiError.notFound('Booking not found.');
+
+  const booking = rows[0];
+  if (booking.user_id !== req.user.userId && req.user.role !== 'Admin') {
+    throw ApiError.forbidden('This booking belongs to another account.');
+  }
+  if (booking.status !== 'Confirmed') {
+    throw ApiError.badRequest('A ticket is only issued once the booking is confirmed.');
+  }
+
+  const [withSeats] = await attachSeats([booking]);
+
+  res.json({
+    success: true,
+    ticket: {
+      bookingRef: withSeats.booking_ref,
+      transactionId: withSeats.transaction_id,
+      movie: {
+        title: withSeats.movie_title,
+        poster_url: withSeats.poster_url,
+        language: withSeats.language,
+        certificate: withSeats.certificate,
+        duration_minutes: withSeats.duration_minutes
+      },
+      venue: {
+        theatre: withSeats.theater_name,
+        locality: withSeats.theater_locality,
+        address: withSeats.theater_address,
+        city: withSeats.city,
+        screen: withSeats.screen_name || `Screen ${withSeats.screen_number}`
+      },
+      showTime: withSeats.show_time,
+      seats: withSeats.seats.map((s) => s.label),
+      seatCount: withSeats.seats.length,
+      amount: {
+        seats: Number(withSeats.seat_amount),
+        convenienceFee: Number(withSeats.convenience_fee),
+        tax: Number(withSeats.tax_amount),
+        total: Number(withSeats.total_amount)
+      },
+      paymentMethod: withSeats.payment_method,
+      bookedAt: withSeats.booking_time,
+      // Encodes the fields a gate scanner needs; rendered as a QR by the client.
+      qrPayload: `CINEWAVE|${withSeats.booking_ref}|${withSeats.show_id}|${withSeats.seats.map((s) => s.label).join(',')}`
+    }
+  });
+});
+
+module.exports = { lockSeats, createBooking, getMyBookings, getBooking, cancelBooking, getTicket, attachSeats };

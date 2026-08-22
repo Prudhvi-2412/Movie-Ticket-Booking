@@ -1,222 +1,273 @@
-import React, { useState, useEffect } from 'react';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import { api } from '../services/api';
-import { Navbar } from '../components/Navbar';
-import { Footer } from '../components/Footer';
-import { CreditCard, QrCode, ShieldCheck, Clock, Zap, CheckCircle2, ArrowRight } from 'lucide-react';
+import { useEffect, useState, useCallback } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import {
+  CreditCard, Smartphone, Landmark, ShieldCheck, Lock, ChevronLeft, TimerOff, XCircle
+} from 'lucide-react';
+import { api, ApiError } from '../lib/api';
+import { useToast } from '../context/ToastContext';
+import { formatCurrency, formatDate, formatTime } from '../lib/format';
+import { HoldTimer } from '../components/booking/HoldTimer';
+import { Button, LoadingBlock, ErrorState, EmptyState, cx } from '../components/ui';
 
-export const PaymentPage = () => {
+const METHODS = [
+  { id: 'UPI', label: 'UPI', icon: Smartphone, hint: 'Pay by UPI app or QR' },
+  { id: 'Credit Card', label: 'Card', icon: CreditCard, hint: 'Credit or debit card' },
+  { id: 'Net Banking', label: 'Net banking', icon: Landmark, hint: 'All major banks' }
+];
+
+export function PaymentPage() {
   const { bookingId } = useParams();
-  const location = useLocation();
   const navigate = useNavigate();
+  const toast = useToast();
 
-  const [paymentMethod, setPaymentMethod] = useState('UPI');
+  const [booking, setBooking] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [method, setMethod] = useState('UPI');
+  const [session, setSession] = useState(null);
   const [processing, setProcessing] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(600); // 10 minutes TTL
-  const [simulatingWebhook, setSimulatingWebhook] = useState(false);
+  const [expired, setExpired] = useState(false);
+  const [failed, setFailed] = useState(null);
 
-  const bookingData = location.state?.booking;
-  const showInfo = location.state?.showInfo;
-  const seats = location.state?.seats || [];
-  const amount = bookingData?.totalAmount || 500;
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setTimeLeft(prev => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          alert('Seat lock expired. Seats released back to pool.');
-          navigate('/');
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const formatTimer = (seconds) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  const handleSimulatePaymentWebhook = async () => {
-    setSimulatingWebhook(true);
+  const load = useCallback(async () => {
+    setLoading(true);
     try {
-      // 1. Get Session & Signature details
-      const sessionRes = await api.post('/payments/initiate', {
-        bookingId: Number(bookingId),
-        paymentMethod
-      });
-
-      const { transactionId, idempotencyKey, signature } = sessionRes.checkoutSession;
-
-      // 2. Trigger Payment Gateway Webhook POST /api/webhooks/payment
-      const eventId = `evt_pay_${Date.now()}`;
-      const webhookRes = await api.post('/webhooks/payment', {
-        eventId,
-        eventType: 'payment.captured',
-        bookingId: Number(bookingId),
-        transactionId,
-        idempotencyKey,
-        amount,
-        paymentMethod,
-        status: 'SUCCESS',
-        signature
-      });
-
-      if (webhookRes.success) {
-        navigate(`/booking/confirmation/${bookingId}`, {
-          state: {
-            bookingId,
-            transactionId,
-            amount,
-            seats,
-            showInfo,
-            paymentMethod
-          }
-        });
+      const res = await api.get(`/bookings/${bookingId}`);
+      setBooking(res.booking);
+      setError(null);
+      // Already paid — do not show a payment form for a settled booking.
+      if (res.booking.status === 'Confirmed') {
+        navigate(`/booking/confirmation/${bookingId}`, { replace: true });
       }
     } catch (err) {
-      console.error('Webhook simulation error:', err);
-      alert('Payment processing failed: ' + err.message);
+      setError(err);
     } finally {
-      setSimulatingWebhook(false);
+      setLoading(false);
+    }
+  }, [bookingId, navigate]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const expiresAt = booking?.expires_at
+    || (booking?.expiresInSeconds ? new Date(Date.now() + booking.expiresInSeconds * 1000).toISOString() : null);
+
+  const pay = async (outcome = 'success') => {
+    if (expired) return;
+    setProcessing(true);
+    setFailed(null);
+
+    try {
+      // Open a checkout session first — this is what a real gateway hands you
+      // before redirecting to its hosted page.
+      let orderId = session?.orderId;
+      if (!orderId) {
+        const init = await api.post('/payments/initiate', { bookingId: Number(bookingId), paymentMethod: method });
+        orderId = init.checkoutSession.orderId;
+        setSession(init.checkoutSession);
+      }
+
+      const res = await api.post('/payments/confirm', {
+        bookingId: Number(bookingId),
+        orderId,
+        paymentMethod: method,
+        outcome
+      });
+
+      if (res.status === 'Confirmed') {
+        toast.success('Payment successful. Your booking is confirmed.');
+        navigate(`/booking/confirmation/${bookingId}`, { replace: true });
+      } else {
+        setFailed(res.message || 'Your payment did not go through.');
+        toast.error(res.message || 'Payment failed. Your seats have been released.');
+      }
+    } catch (err) {
+      if (err instanceof ApiError && err.isExpired) {
+        setExpired(true);
+        toast.error(err.message);
+      } else {
+        setFailed(err.message);
+        toast.error(err.message || 'We could not process that payment.');
+      }
+    } finally {
+      setProcessing(false);
     }
   };
 
+  if (loading) return <LoadingBlock label="Loading your booking…" className="min-h-[60vh]" />;
+
+  if (error) {
+    return (
+      <div className="page py-16">
+        <ErrorState
+          title={error.status === 404 ? 'Booking not found' : 'Could not load this booking'}
+          message={error.status === 404 ? "We couldn't find that booking on your account." : error.message}
+          onRetry={error.status === 404 ? undefined : load}
+        />
+      </div>
+    );
+  }
+
+  const unpayable = ['Cancelled', 'Refunded', 'Expired'].includes(booking.status);
+
+  if (unpayable) {
+    return (
+      <div className="page py-20">
+        <EmptyState
+          icon={TimerOff}
+          title="This booking is no longer payable"
+          message={`It's marked ${booking.status.toLowerCase()}. Nothing has been charged — start a new booking to get your seats.`}
+          action={<Button onClick={() => navigate('/movies')}>Browse movies</Button>}
+        />
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-[#0b0f19] text-gray-100 flex flex-col">
-      <Navbar />
+    <div className="page py-6 max-w-4xl pb-24">
+      <button onClick={() => navigate(-1)} className="btn-ghost btn-sm mb-4 -ml-2">
+        <ChevronLeft className="w-4 h-4" aria-hidden /> Back
+      </button>
 
-      <main className="flex-1 max-w-4xl w-full mx-auto px-6 py-10">
-        {/* Redis TTL Lock Timer Bar */}
-        <div className="glass-panel p-4 mb-8 bg-amber-950/20 border border-amber-500/30 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Zap className="w-5 h-5 text-amber-400 animate-pulse" />
-            <div>
-              <span className="text-xs font-bold text-amber-400">Redis Seat Lock Active</span>
-              <p className="text-[11px] text-gray-300">Complete payment before Redis TTL expires</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 font-mono text-lg font-black text-amber-400 bg-amber-950/60 px-3 py-1 rounded-lg border border-amber-700/50">
-            <Clock className="w-4 h-4 text-amber-400" /> {formatTimer(timeLeft)}
-          </div>
+      <h1 className="text-2xl font-extrabold tracking-tight mb-1">Payment</h1>
+      <p className="text-sm text-ink-400 mb-6 tabular">Booking {booking.booking_ref}</p>
+
+      {expiresAt && (
+        <HoldTimer expiresAt={expiresAt} onExpire={() => setExpired(true)} className="mb-6" />
+      )}
+
+      {expired && (
+        <div className="surface border-negative-500/40 bg-negative-500/5 p-5 mb-6" role="alert">
+          <p className="text-sm font-semibold text-ink-100 mb-1">Your seat hold expired</p>
+          <p className="text-sm text-ink-400 mb-4">
+            The seats have been returned to the pool and nothing was charged.
+          </p>
+          <Button onClick={() => navigate(`/booking/seats/${booking.show_id}`)}>Pick seats again</Button>
         </div>
+      )}
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-          {/* Payment Method Selector */}
-          <div className="md:col-span-2 glass-panel p-8 rounded-3xl border border-slate-800 space-y-6">
-            <div>
-              <h2 className="text-2xl font-bold text-white flex items-center gap-2">
-                <CreditCard className="w-6 h-6 text-red-500" /> Payment Gateway Simulator
-              </h2>
-              <p className="text-xs text-gray-400">Integrated Razorpay / Stripe Webhook Workflow</p>
-            </div>
+      {failed && !expired && (
+        <div className="surface border-negative-500/40 bg-negative-500/5 p-5 mb-6" role="alert">
+          <p className="text-sm font-semibold text-negative-400 flex items-center gap-2 mb-1">
+            <XCircle className="w-4 h-4" aria-hidden /> Payment unsuccessful
+          </p>
+          <p className="text-sm text-ink-400">{failed}</p>
+        </div>
+      )}
 
-            {/* Methods Tabs */}
-            <div className="grid grid-cols-3 gap-3">
-              {[
-                { id: 'UPI', label: 'UPI / QR', icon: QrCode },
-                { id: 'Credit Card', label: 'Card', icon: CreditCard },
-                { id: 'Net Banking', label: 'Banking', icon: ShieldCheck }
-              ].map(m => (
-                <button
-                  key={m.id}
-                  onClick={() => setPaymentMethod(m.id)}
-                  className={`p-3 rounded-xl border text-xs font-bold flex flex-col items-center gap-2 transition-all ${
-                    paymentMethod === m.id
-                      ? 'border-red-500 bg-red-950/30 text-white shadow-md shadow-red-900/30'
-                      : 'border-slate-800 bg-slate-900/60 text-gray-400 hover:border-slate-700'
-                  }`}
-                >
-                  <m.icon className="w-5 h-5 text-red-400" />
-                  {m.label}
-                </button>
-              ))}
-            </div>
+      <div className="grid md:grid-cols-5 gap-6">
+        {/* Method picker */}
+        <div className="md:col-span-3 surface p-5 sm:p-6">
+          <h2 className="text-base font-bold text-ink-50 mb-4">How would you like to pay?</h2>
 
-            {/* Simulating Screen */}
-            <div className="bg-slate-900/90 p-6 rounded-2xl border border-slate-800 space-y-4">
-              <div className="flex items-center justify-between text-xs border-b border-slate-800 pb-3">
-                <span className="text-gray-400">Gateway:</span>
-                <span className="font-mono text-emerald-400 font-bold">Razorpay Sandbox / Webhook Enabled</span>
-              </div>
+          <div className="grid sm:grid-cols-3 gap-3 mb-6">
+            {METHODS.map((m) => (
+              <button
+                key={m.id}
+                onClick={() => { setMethod(m.id); setSession(null); }}
+                aria-pressed={method === m.id}
+                disabled={expired || processing}
+                className={cx(
+                  'p-4 rounded-xl border text-left transition-all duration-200 disabled:opacity-50',
+                  method === m.id
+                    ? 'border-brand-500 bg-brand-500/10 shadow-brand-sm'
+                    : 'border-ink-700 bg-ink-800/60 hover:border-ink-500'
+                )}
+              >
+                <m.icon
+                  className={cx('w-5 h-5 mb-2', method === m.id ? 'text-brand-400' : 'text-ink-400')}
+                  aria-hidden
+                />
+                <p className="text-sm font-semibold text-ink-50">{m.label}</p>
+                <p className="text-2xs text-ink-400 mt-0.5">{m.hint}</p>
+              </button>
+            ))}
+          </div>
 
-              {paymentMethod === 'UPI' && (
-                <div className="flex flex-col items-center gap-3 py-4">
-                  <div className="w-32 h-32 bg-white rounded-xl p-2 flex items-center justify-center">
-                    <QrCode className="w-28 h-28 text-slate-900" />
-                  </div>
-                  <span className="text-xs text-gray-400">Scan QR or click simulate button below</span>
-                </div>
-              )}
+          {/*
+            Sandbox notice. This is a demonstration gateway: the server signs
+            and delivers the callback to its own webhook so signature checks,
+            idempotency and the booking state machine all run for real, but no
+            money moves and no card details are ever collected.
+          */}
+          <div className="rounded-xl border border-info-500/30 bg-info-500/5 p-4 mb-6">
+            <p className="text-xs font-semibold text-info-400 flex items-center gap-2 mb-1.5">
+              <ShieldCheck className="w-4 h-4" aria-hidden /> Sandbox gateway
+            </p>
+            <p className="text-xs text-ink-300 leading-relaxed">
+              CineWave runs against a simulated payment gateway. No card details are
+              collected and no money moves — but the confirmation genuinely goes
+              through a signed webhook, so your booking is created exactly as it
+              would be in production.
+            </p>
+          </div>
 
-              {paymentMethod === 'Credit Card' && (
-                <div className="space-y-3 text-xs">
-                  <input type="text" placeholder="Card Number (4242 •••• •••• 4242)" className="w-full bg-slate-950 p-3 rounded-xl border border-slate-800 text-gray-200 focus:outline-none" readOnly />
-                  <div className="grid grid-cols-2 gap-3">
-                    <input type="text" placeholder="MM/YY" className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-gray-200 focus:outline-none" readOnly />
-                    <input type="text" placeholder="CVV (123)" className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-gray-200 focus:outline-none" readOnly />
-                  </div>
-                </div>
-              )}
-
-              {paymentMethod === 'Net Banking' && (
-                <div className="text-xs text-gray-400 text-center py-4">
-                  Select Bank: HDFC Bank • ICICI Bank • State Bank of India
-                </div>
-              )}
-            </div>
+          <div className="space-y-3">
+            <Button
+              onClick={() => pay('success')}
+              loading={processing}
+              disabled={expired}
+              size="lg"
+              className="w-full justify-center"
+              icon={Lock}
+            >
+              Pay {formatCurrency(booking.total_amount)}
+            </Button>
 
             <button
-              disabled={simulatingWebhook}
-              onClick={handleSimulatePaymentWebhook}
-              className="w-full btn-accent py-4 justify-center text-sm font-bold shadow-xl flex items-center gap-2"
+              onClick={() => pay('failure')}
+              disabled={processing || expired}
+              className="w-full text-2xs text-ink-500 hover:text-ink-300 transition-colors py-1 disabled:opacity-40"
             >
-              {simulatingWebhook ? (
-                <>
-                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                  Verifying Signature & Executing Webhook...
-                </>
-              ) : (
-                <>
-                  <CheckCircle2 className="w-5 h-5" /> Pay ₹{amount} (Simulate Gateway Webhook) <ArrowRight className="w-4 h-4" />
-                </>
-              )}
+              Simulate a declined payment (for testing the failure path)
             </button>
           </div>
+        </div>
 
-          {/* Order Summary */}
-          <div className="glass-panel p-6 rounded-3xl border border-slate-800 space-y-4">
-            <h3 className="text-base font-bold text-white border-b border-slate-800 pb-3">Booking Details</h3>
+        {/* Order summary */}
+        <aside className="md:col-span-2">
+          <div className="surface p-5 md:sticky md:top-24">
+            <h2 className="text-sm font-bold text-ink-50 mb-4">Order summary</h2>
 
-            <div className="space-y-3 text-xs text-gray-300">
-              <div>
-                <span className="text-gray-500 block">Movie:</span>
-                <span className="font-bold text-white">{showInfo?.movie_title || 'Movie Title'}</span>
-              </div>
-              <div>
-                <span className="text-gray-500 block">Theater:</span>
-                <span>{showInfo?.theater_name || 'Cinema Hall'}</span>
-              </div>
-              <div>
-                <span className="text-gray-500 block">Seats:</span>
-                <span className="font-bold text-red-400">
-                  {seats.length > 0 ? seats.map(s => `${s.seat_row}${s.seat_number}`).join(', ') : 'Seats'}
-                </span>
-              </div>
-              <div className="pt-3 border-t border-slate-800 flex justify-between items-center font-bold text-sm">
-                <span>Total Amount:</span>
-                <span className="text-emerald-400 font-mono text-lg">₹{amount}</span>
+            <div className="pb-4 mb-4 border-b border-ink-800">
+              <p className="font-semibold text-ink-50">{booking.movie_title}</p>
+              <p className="text-xs text-ink-400 mt-1">
+                {booking.theater_name} · {booking.screen_name || `Screen ${booking.screen_number}`}
+              </p>
+              <p className="text-xs text-ink-400 tabular">
+                {formatDate(booking.show_time)} · {formatTime(booking.show_time)}
+              </p>
+              <div className="flex flex-wrap gap-1.5 mt-3">
+                {booking.seats?.map((seat) => (
+                  <span key={seat.seat_id} className="badge-brand !normal-case !tracking-normal tabular">
+                    {seat.label}
+                  </span>
+                ))}
               </div>
             </div>
-          </div>
-        </div>
-      </main>
 
-      <Footer />
+            <dl className="space-y-2 text-sm">
+              <div className="flex justify-between text-ink-300">
+                <dt>Tickets</dt>
+                <dd className="tabular text-ink-100">{formatCurrency(booking.seat_amount)}</dd>
+              </div>
+              <div className="flex justify-between text-ink-300">
+                <dt>Convenience fee</dt>
+                <dd className="tabular text-ink-100">{formatCurrency(booking.convenience_fee)}</dd>
+              </div>
+              <div className="flex justify-between text-ink-300">
+                <dt>GST</dt>
+                <dd className="tabular text-ink-100">{formatCurrency(booking.tax_amount)}</dd>
+              </div>
+              <div className="flex justify-between items-baseline border-t border-ink-700 pt-3 mt-1">
+                <dt className="font-bold text-ink-50">Total</dt>
+                <dd className="text-xl font-extrabold text-ink-50 tabular">
+                  {formatCurrency(booking.total_amount)}
+                </dd>
+              </div>
+            </dl>
+          </div>
+        </aside>
+      </div>
     </div>
   );
-};
+}
