@@ -346,6 +346,18 @@ the booking to `Pending` so the customer can retry on their still-held seats.
 > expiry and any CVV, or UPI id `success@razorpay`. Use `failure@razorpay` to
 > exercise the decline path.
 
+**"Mark as paid" (test mode only).** The payment page also offers a shortcut
+that confirms a booking without going through Checkout, so the flow can be
+demonstrated or walked end to end without completing a UPI or card payment
+every time. It still runs the full signed-callback path — the booking, seats,
+ticket and analytics are all created for real; only the money is absent.
+
+It is gated on the key *prefix*, not on `NODE_ENV` or a settable flag:
+`allowsTestBypass()` returns true only for an `rzp_test_` key. Swapping in
+`rzp_live_` credentials removes the button and makes `POST
+/api/payments/confirm` return 403, with no other change and no way to
+re-enable it by accident.
+
 To receive webhooks in local development, expose the port and register the URL
 in the Razorpay dashboard against `payment.captured` and `payment.failed`:
 
@@ -424,7 +436,7 @@ Errors add `code` and, for validation failures, `details`.
 | `POST` | `/api/payments/initiate` | Creates a Razorpay order |
 | `POST` | `/api/payments/verify` | Verifies the Checkout callback signature |
 | `POST` | `/api/payments/cancel` | Customer dismissed Checkout; seats stay held |
-| `POST` | `/api/payments/confirm` | Simulator only. 403 when Razorpay is configured |
+| `POST` | `/api/payments/confirm` | Test mode only — "mark as paid". 403 on live keys |
 | `GET` | `/api/payments/booking/:bookingId` | Payment attempts |
 
 ### Webhooks
