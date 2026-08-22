@@ -4,7 +4,7 @@
 
 **A movie ticket booking platform — real seat locking, real payment state machine, real analytics.**
 
-React · Node.js · Express · MySQL 8 · Redis · Kafka · Docker
+React · Node.js · Express · MySQL 8 · Redis · Kafka · Razorpay · Docker
 
 </div>
 
@@ -298,13 +298,65 @@ still makes double booking impossible.
 
 ### Payments and webhooks
 
-`services/paymentGateway.js` stands in for a hosted gateway. It creates orders
-and signs callbacks with `WEBHOOK_SECRET`; `POST /api/payments/confirm` feeds
-that signed callback through the *real* webhook handler in-process. No money
-moves and no card details are collected, but signature verification,
-idempotency and the booking state machine all genuinely run. Swapping in a real
-gateway means replacing `createOrder` and `signPayload` — the webhook handler
-needs no changes.
+Payments run through **Razorpay**. `services/paymentGateway.js` picks the mode
+at boot: real Razorpay when `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` are
+set, and a local simulator otherwise. The simulator is not a shortcut — CI and
+the test suite have no network and no Razorpay account, and both modes share
+the same verification, idempotency and state-machine code.
+
+**Three secrets, three different jobs.** Mixing them up is the classic way to
+get a Razorpay integration subtly wrong:
+
+| Variable | Visibility | Signs |
+| -------- | ---------- | ----- |
+| `RAZORPAY_KEY_ID` | public — sent to the browser | nothing |
+| `RAZORPAY_KEY_SECRET` | server only | the Checkout callback, `order_id\|payment_id` |
+| `RAZORPAY_WEBHOOK_SECRET` | server only | webhook bodies. Set in the Razorpay dashboard; **not** the key secret |
+
+**The live flow**
+
+```
+POST /api/payments/initiate      server creates a Razorpay order, records the
+                                 intent, returns order id + publishable key
+        │
+        ▼
+  Razorpay Checkout              opens in the browser; Razorpay collects the
+  (checkout.razorpay.com)        method and the card/UPI details. CineWave
+        │                        never sees them.
+        ▼
+POST /api/payments/verify        HMAC of "<order_id>|<payment_id>" checked
+                                 against the key secret, the order matched to
+                                 this booking, and the amount re-read from
+                                 Razorpay — not from the browser.
+        │
+        ▼
+POST /api/webhooks/payment       Razorpay's own async callback. Authoritative,
+                                 and may arrive before or after the above.
+```
+
+Both routes funnel into `ConfirmBookingPayment`, which is idempotent — so
+whichever lands first confirms the booking and the other is a no-op. The
+webhook remains the source of truth; `/verify` exists so the customer sees
+confirmation immediately instead of waiting on it.
+
+Dismissing the Checkout widget calls `POST /api/payments/cancel`, which returns
+the booking to `Pending` so the customer can retry on their still-held seats.
+
+> **Test cards** (test mode only): card `4111 1111 1111 1111` with any future
+> expiry and any CVV, or UPI id `success@razorpay`. Use `failure@razorpay` to
+> exercise the decline path.
+
+To receive webhooks in local development, expose the port and register the URL
+in the Razorpay dashboard against `payment.captured` and `payment.failed`:
+
+```bash
+ngrok http 5000
+# then set the webhook URL to https://<id>.ngrok.io/api/webhooks/payment
+# and copy the dashboard's webhook secret into RAZORPAY_WEBHOOK_SECRET
+```
+
+Without `RAZORPAY_WEBHOOK_SECRET` the endpoint falls back to verifying against
+`WEBHOOK_SECRET`, which is what the simulator uses.
 
 The webhook endpoint guarantees three things:
 
@@ -368,7 +420,11 @@ Errors add `code` and, for validation failures, `details`.
 | `GET` | `/api/bookings/:id` | Owner or admin only |
 | `GET` | `/api/bookings/:id/ticket` | Digital ticket, confirmed bookings only |
 | `POST` | `/api/bookings/:id/cancel` | Up to 2 hours before showtime |
-| `POST` | `/api/payments/initiate` · `/api/payments/confirm` | |
+| `GET` | `/api/payments/config` | Which gateway is configured (publishable key only) |
+| `POST` | `/api/payments/initiate` | Creates a Razorpay order |
+| `POST` | `/api/payments/verify` | Verifies the Checkout callback signature |
+| `POST` | `/api/payments/cancel` | Customer dismissed Checkout; seats stay held |
+| `POST` | `/api/payments/confirm` | Simulator only. 403 when Razorpay is configured |
 | `GET` | `/api/payments/booking/:bookingId` | Payment attempts |
 
 ### Webhooks
@@ -412,7 +468,10 @@ true|false`, so a sold ticket is never orphaned.
 | `REDIS_HOST` `REDIS_PORT` `REDIS_PASSWORD` | `127.0.0.1` `6380` — | |
 | `SEAT_LOCK_TTL` | `600` | Seconds. Drives both the Redis TTL and the UI countdown |
 | `KAFKA_BROKERS` | `localhost:9094` | |
-| `WEBHOOK_SECRET` | — | **Required in production**. HMAC key for webhook signatures |
+| `WEBHOOK_SECRET` | — | **Required in production**. HMAC key for the simulator, and the webhook fallback |
+| `RAZORPAY_KEY_ID` | — | Publishable key. Blank = use the simulator |
+| `RAZORPAY_KEY_SECRET` | — | Signs the Checkout callback. Server only |
+| `RAZORPAY_WEBHOOK_SECRET` | — | From the Razorpay dashboard. Signs webhook bodies |
 | `CONVENIENCE_FEE_PER_SEAT` | `20` | |
 | `GST_RATE` | `0.18` | |
 | `MAX_SEATS_PER_BOOKING` | `10` | |
@@ -644,10 +703,16 @@ provisions datastores and runs the whole thing.
 
 ## Known limitations
 
-- **The payment gateway is simulated.** The integration is real — orders,
-  signed callbacks, idempotency, state transitions — but no money moves.
-  Production needs `paymentGateway.js` pointed at a real provider and a public
-  webhook URL.
+- **Razorpay runs in test mode**, so no real money moves. Going live is a key
+  swap plus a registered webhook URL — no code change. The bundled simulator
+  remains for CI and the test suite, which have neither network nor an account.
+- **Webhooks need a public URL.** Without one (ngrok or a deployment), only the
+  Checkout callback confirms bookings. That path is signature-verified and
+  amount-checked, so it is safe — but the asynchronous source of truth is
+  absent, and a customer who closes the tab mid-payment would rely on the
+  hold expiring rather than on Razorpay telling us what happened.
+- **Refunds are ledger-only.** Cancelling marks payments `Refunded` in the
+  database without calling Razorpay's refund API.
 - **Email and SMS are logged, not sent.** The Kafka consumers write what they
   would have dispatched. Wiring a provider means editing one consumer.
 - **Kafka consumers read from an in-process bus**, not from Kafka topics. The
