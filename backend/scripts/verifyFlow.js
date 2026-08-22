@@ -397,6 +397,39 @@ const run = async () => {
   const orderId = initiate.body?.checkoutSession?.orderId;
 
   /*
+   * The Checkout callback endpoint.
+   *
+   * Its happy path needs a human completing Razorpay's hosted form, which a
+   * script cannot drive — so what is asserted here is the part that actually
+   * protects money: a forged or mismatched signature must never confirm a
+   * booking. The success path is covered by the webhook below, which is the
+   * authoritative route in production anyway.
+   */
+  const forgedVerify = await call('POST', '/api/payments/verify', {
+    token: tokenA,
+    body: {
+      bookingId,
+      razorpay_order_id: orderId,
+      razorpay_payment_id: `pay_forged_${suffix}`,
+      razorpay_signature: 'f'.repeat(64)
+    }
+  });
+  check('payment callback with a forged signature is rejected (401)',
+    forgedVerify.status === 401, `got ${forgedVerify.status}`);
+
+  const stillPending = await call('GET', `/api/bookings/${bookingId}`, { token: tokenA });
+  check('a forged callback leaves the booking unconfirmed',
+    stillPending.body?.booking?.status !== 'Confirmed',
+    stillPending.body?.booking?.status);
+
+  const noSigVerify = await call('POST', '/api/payments/verify', {
+    token: tokenA,
+    body: { bookingId, razorpay_order_id: orderId, razorpay_payment_id: `pay_${suffix}` }
+  });
+  check('payment callback without a signature is rejected (400)',
+    noSigVerify.status === 400, `got ${noSigVerify.status}`);
+
+  /*
    * Completing the payment.
    *
    * Against the simulator this posts to /payments/confirm. Against real
