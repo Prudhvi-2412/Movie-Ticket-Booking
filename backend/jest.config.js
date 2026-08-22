@@ -9,6 +9,9 @@
 module.exports = {
   testEnvironment: 'node',
   testMatch: ['**/tests/**/*.test.js'],
+  // Runs before any test module loads — clears the Razorpay keys so the suite
+  // always exercises the simulator rather than the live account.
+  setupFiles: ['<rootDir>/tests/setup.js'],
   // Fixtures build a whole location -> show chain over HTTP, and one test
   // deliberately waits for a lock TTL to lapse.
   testTimeout: 20_000,

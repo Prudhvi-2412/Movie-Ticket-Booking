@@ -186,15 +186,22 @@ proc: BEGIN
             SET MESSAGE_TEXT = 'The seat hold for this booking has expired.';
     END IF;
 
-    -- The unique key on idempotency_key means a replayed gateway callback
-    -- updates the existing row instead of inserting a second payment.
+    -- One row per gateway order, keyed on idempotency_key. The row starts as
+    -- Pending when checkout opens and is promoted here, so a replayed callback
+    -- updates it instead of inserting a second payment. transaction_id is
+    -- overwritten because the intent row holds a placeholder until the gateway
+    -- issues the real payment id.
     INSERT INTO payments (booking_id, payment_method, transaction_id,
                           idempotency_key, gateway_order_id, amount, payment_status)
     VALUES (p_booking_id, p_method, p_transaction_id,
             p_idempotency_key, p_gateway_order_id, COALESCE(p_amount, v_amount), 'Success')
     ON DUPLICATE KEY UPDATE
-        payment_status = 'Success',
-        updated_at     = NOW();
+        payment_status   = 'Success',
+        transaction_id   = VALUES(transaction_id),
+        payment_method   = VALUES(payment_method),
+        gateway_order_id = COALESCE(VALUES(gateway_order_id), gateway_order_id),
+        amount           = VALUES(amount),
+        updated_at       = NOW();
 
     UPDATE bookings
     SET status       = 'Confirmed',
@@ -246,6 +253,7 @@ proc: BEGIN
             p_idempotency_key, v_amount, 'Failed', p_reason)
     ON DUPLICATE KEY UPDATE
         payment_status = 'Failed',
+        transaction_id = VALUES(transaction_id),
         failure_reason = p_reason,
         updated_at     = NOW();
 

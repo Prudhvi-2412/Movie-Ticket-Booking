@@ -6,8 +6,9 @@ import {
 import { api, ApiError } from '../lib/api';
 import { useToast } from '../context/ToastContext';
 import { formatCurrency, formatDate, formatTime } from '../lib/format';
+import { openCheckout } from '../lib/razorpay';
 import { HoldTimer } from '../components/booking/HoldTimer';
-import { Button, LoadingBlock, ErrorState, EmptyState, cx } from '../components/ui';
+import { Button, LoadingBlock, ErrorState, EmptyState, useAsync, cx } from '../components/ui';
 
 const METHODS = [
   { id: 'UPI', label: 'UPI', icon: Smartphone, hint: 'Pay by UPI app or QR' },
@@ -28,6 +29,11 @@ export function PaymentPage() {
   const [processing, setProcessing] = useState(false);
   const [expired, setExpired] = useState(false);
   const [failed, setFailed] = useState(null);
+
+  // Which gateway is configured is a server decision; the UI adapts rather
+  // than assuming one or hardcoding a key.
+  const { data: paymentConfig } = useAsync(() => api.get('/payments/config', { auth: false }));
+  const isRazorpay = paymentConfig?.provider === 'razorpay';
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -51,35 +57,84 @@ export function PaymentPage() {
   const expiresAt = booking?.expires_at
     || (booking?.expiresInSeconds ? new Date(Date.now() + booking.expiresInSeconds * 1000).toISOString() : null);
 
+  /**
+   * Live Razorpay: open a server-created order in Checkout, then post the
+   * signed response back for verification. The signature is what proves the
+   * payment happened — the browser saying "it worked" is worth nothing.
+   */
+  const payWithRazorpay = async () => {
+    const init = await api.post('/payments/initiate', {
+      bookingId: Number(bookingId),
+      paymentMethod: method
+    });
+    const checkoutSession = init.checkoutSession;
+    setSession(checkoutSession);
+
+    let response;
+    try {
+      response = await openCheckout(checkoutSession, {
+        name: booking.customer_name,
+        email: booking.customer_email
+      });
+    } catch (err) {
+      if (err.dismissed) {
+        // Closing the widget is not a failure — release the PaymentProcessing
+        // state so the customer can try again on their still-held seats.
+        await api.post('/payments/cancel', { bookingId: Number(bookingId) }).catch(() => {});
+        toast.info('Payment cancelled. Your seats are still held.');
+        await load();
+        return;
+      }
+      throw err;
+    }
+
+    const res = await api.post('/payments/verify', {
+      bookingId: Number(bookingId),
+      razorpay_order_id: response.razorpay_order_id,
+      razorpay_payment_id: response.razorpay_payment_id,
+      razorpay_signature: response.razorpay_signature
+    });
+
+    if (res.status === 'Confirmed') {
+      toast.success('Payment successful. Your booking is confirmed.');
+      navigate(`/booking/confirmation/${bookingId}`, { replace: true });
+    } else {
+      setFailed(res.message || 'Your payment did not go through.');
+    }
+  };
+
+  /** Simulator path — only reachable when no Razorpay keys are configured. */
+  const payWithSimulator = async (outcome) => {
+    let orderId = session?.orderId;
+    if (!orderId) {
+      const init = await api.post('/payments/initiate', {
+        bookingId: Number(bookingId), paymentMethod: method
+      });
+      orderId = init.checkoutSession.orderId;
+      setSession(init.checkoutSession);
+    }
+
+    const res = await api.post('/payments/confirm', {
+      bookingId: Number(bookingId), orderId, paymentMethod: method, outcome
+    });
+
+    if (res.status === 'Confirmed') {
+      toast.success('Payment successful. Your booking is confirmed.');
+      navigate(`/booking/confirmation/${bookingId}`, { replace: true });
+    } else {
+      setFailed(res.message || 'Your payment did not go through.');
+      toast.error(res.message || 'Payment failed. Your seats have been released.');
+    }
+  };
+
   const pay = async (outcome = 'success') => {
     if (expired) return;
     setProcessing(true);
     setFailed(null);
 
     try {
-      // Open a checkout session first — this is what a real gateway hands you
-      // before redirecting to its hosted page.
-      let orderId = session?.orderId;
-      if (!orderId) {
-        const init = await api.post('/payments/initiate', { bookingId: Number(bookingId), paymentMethod: method });
-        orderId = init.checkoutSession.orderId;
-        setSession(init.checkoutSession);
-      }
-
-      const res = await api.post('/payments/confirm', {
-        bookingId: Number(bookingId),
-        orderId,
-        paymentMethod: method,
-        outcome
-      });
-
-      if (res.status === 'Confirmed') {
-        toast.success('Payment successful. Your booking is confirmed.');
-        navigate(`/booking/confirmation/${bookingId}`, { replace: true });
-      } else {
-        setFailed(res.message || 'Your payment did not go through.');
-        toast.error(res.message || 'Payment failed. Your seats have been released.');
-      }
+      if (isRazorpay && outcome === 'success') await payWithRazorpay();
+      else await payWithSimulator(outcome);
     } catch (err) {
       if (err instanceof ApiError && err.isExpired) {
         setExpired(true);
@@ -157,47 +212,82 @@ export function PaymentPage() {
       <div className="grid md:grid-cols-5 gap-6">
         {/* Method picker */}
         <div className="md:col-span-3 surface p-5 sm:p-6">
-          <h2 className="text-base font-bold text-ink-50 mb-4">How would you like to pay?</h2>
-
-          <div className="grid sm:grid-cols-3 gap-3 mb-6">
-            {METHODS.map((m) => (
-              <button
-                key={m.id}
-                onClick={() => { setMethod(m.id); setSession(null); }}
-                aria-pressed={method === m.id}
-                disabled={expired || processing}
-                className={cx(
-                  'p-4 rounded-xl border text-left transition-all duration-200 disabled:opacity-50',
-                  method === m.id
-                    ? 'border-brand-500 bg-brand-500/10 shadow-brand-sm'
-                    : 'border-ink-700 bg-ink-800/60 hover:border-ink-500'
-                )}
-              >
-                <m.icon
-                  className={cx('w-5 h-5 mb-2', method === m.id ? 'text-brand-400' : 'text-ink-400')}
-                  aria-hidden
-                />
-                <p className="text-sm font-semibold text-ink-50">{m.label}</p>
-                <p className="text-2xs text-ink-400 mt-0.5">{m.hint}</p>
-              </button>
-            ))}
-          </div>
+          <h2 className="text-base font-bold text-ink-50 mb-4">
+            {isRazorpay ? 'Pay securely with Razorpay' : 'How would you like to pay?'}
+          </h2>
 
           {/*
-            Sandbox notice. This is a demonstration gateway: the server signs
-            and delivers the callback to its own webhook so signature checks,
-            idempotency and the booking state machine all run for real, but no
-            money moves and no card details are ever collected.
+            Razorpay Checkout collects the method itself — showing our own
+            picker first would just be a second, contradictory choice. The
+            simulator has no widget, so it keeps the picker.
           */}
+          {!isRazorpay && (
+            <div className="grid sm:grid-cols-3 gap-3 mb-6">
+              {METHODS.map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => { setMethod(m.id); setSession(null); }}
+                  aria-pressed={method === m.id}
+                  disabled={expired || processing}
+                  className={cx(
+                    'p-4 rounded-xl border text-left transition-all duration-200 disabled:opacity-50',
+                    method === m.id
+                      ? 'border-brand-500 bg-brand-500/10 shadow-brand-sm'
+                      : 'border-ink-700 bg-ink-800/60 hover:border-ink-500'
+                  )}
+                >
+                  <m.icon
+                    className={cx('w-5 h-5 mb-2', method === m.id ? 'text-brand-400' : 'text-ink-400')}
+                    aria-hidden
+                  />
+                  <p className="text-sm font-semibold text-ink-50">{m.label}</p>
+                  <p className="text-2xs text-ink-400 mt-0.5">{m.hint}</p>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {isRazorpay && (
+            <div className="flex flex-wrap gap-2 mb-6">
+              {METHODS.map((m) => (
+                <span key={m.id} className="badge-neutral !normal-case !tracking-normal !font-medium">
+                  <m.icon className="w-3 h-3" aria-hidden /> {m.label}
+                </span>
+              ))}
+              <span className="badge-neutral !normal-case !tracking-normal !font-medium">Wallets</span>
+            </div>
+          )}
+
           <div className="rounded-xl border border-info-500/30 bg-info-500/5 p-4 mb-6">
             <p className="text-xs font-semibold text-info-400 flex items-center gap-2 mb-1.5">
-              <ShieldCheck className="w-4 h-4" aria-hidden /> Sandbox gateway
+              <ShieldCheck className="w-4 h-4" aria-hidden />
+              {isRazorpay
+                ? (paymentConfig?.testMode ? 'Razorpay — test mode' : 'Razorpay — secure checkout')
+                : 'Sandbox gateway'}
             </p>
             <p className="text-xs text-ink-300 leading-relaxed">
-              CineWave runs against a simulated payment gateway. No card details are
-              collected and no money moves — but the confirmation genuinely goes
-              through a signed webhook, so your booking is created exactly as it
-              would be in production.
+              {isRazorpay ? (
+                paymentConfig?.testMode ? (
+                  <>
+                    Payments run through Razorpay in test mode, so no real money moves.
+                    Use card <span className="font-mono text-ink-100">4111 1111 1111 1111</span> with
+                    any future expiry and any CVV, or UPI id{' '}
+                    <span className="font-mono text-ink-100">success@razorpay</span>.
+                    CineWave never sees or stores your card details.
+                  </>
+                ) : (
+                  <>
+                    Your payment is handled entirely by Razorpay. CineWave never sees or
+                    stores your card details — we only receive a signed confirmation.
+                  </>
+                )
+              ) : (
+                <>
+                  No Razorpay keys are configured, so CineWave is using its built-in
+                  simulator. No card details are collected and no money moves, but the
+                  confirmation still goes through a signed webhook.
+                </>
+              )}
             </p>
           </div>
 
@@ -213,13 +303,17 @@ export function PaymentPage() {
               Pay {formatCurrency(booking.total_amount)}
             </Button>
 
-            <button
-              onClick={() => pay('failure')}
-              disabled={processing || expired}
-              className="w-full text-2xs text-ink-500 hover:text-ink-300 transition-colors py-1 disabled:opacity-40"
-            >
-              Simulate a declined payment (for testing the failure path)
-            </button>
+            {/* Only meaningful against the simulator — Razorpay test mode has
+                its own declined-payment instruments. */}
+            {!isRazorpay && (
+              <button
+                onClick={() => pay('failure')}
+                disabled={processing || expired}
+                className="w-full text-2xs text-ink-500 hover:text-ink-300 transition-colors py-1 disabled:opacity-40"
+              >
+                Simulate a declined payment (for testing the failure path)
+              </button>
+            )}
           </div>
         </div>
 

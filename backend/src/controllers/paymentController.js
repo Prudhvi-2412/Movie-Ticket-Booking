@@ -1,5 +1,4 @@
 const db = require('../config/db');
-const config = require('../config/env');
 const gateway = require('../services/paymentGateway');
 const { handlePaymentWebhook } = require('./webhookController');
 const { settleConfirmedBooking } = require('../services/bookingSettlement');
@@ -48,19 +47,24 @@ const initiatePayment = asyncHandler(async (req, res) => {
 
   const order = await gateway.createOrder(bookingId, Number(booking.total_amount), booking.booking_ref);
 
-  // Remember the order so the callback can be matched back to this booking
-  // without trusting the browser's claim about which booking it paid for.
   await db.query(
     `UPDATE bookings SET status = 'PaymentProcessing'
       WHERE booking_id = ? AND status IN ('Pending', 'PaymentFailed')`,
     [bookingId]
   );
+
+  // Record the intent against this order. Two reasons: the callback can be
+  // matched back to a booking without trusting the browser's claim about which
+  // booking it paid for, and a payment that is authorised but never confirmed
+  // still leaves a trace to reconcile. The idempotency key matches what
+  // ConfirmBookingPayment uses, so this row is promoted in place rather than
+  // leaving an orphaned Pending beside a Success.
   await db.query(
     `INSERT INTO payments (booking_id, payment_method, transaction_id, idempotency_key,
                            gateway_order_id, amount, payment_status)
      VALUES (?, ?, ?, ?, ?, ?, 'Pending')
      ON DUPLICATE KEY UPDATE gateway_order_id = VALUES(gateway_order_id), updated_at = NOW()`,
-    [bookingId, paymentMethod, `intent_${order.orderId}`, `intent_${order.orderId}`,
+    [bookingId, paymentMethod, `intent_${order.orderId}`, `idem_${order.orderId}`,
       order.orderId, booking.total_amount]
   );
 
@@ -193,19 +197,24 @@ const cancelPaymentAttempt = asyncHandler(async (req, res) => {
 });
 
 /**
- * POST /api/payments/confirm
+ * POST /api/payments/confirm  — simulator only.
  *
- * Stands in for the customer completing (or abandoning) payment on the
- * gateway's hosted page. The server builds and signs the callback the
- * gateway would send, then feeds it through the real webhook handler — so
- * signature verification, idempotency and the booking state machine are all
- * genuinely exercised rather than bypassed.
+ * Stands in for the customer completing (or abandoning) payment on a hosted
+ * page. The server builds and signs the callback the gateway would send, then
+ * feeds it through the real webhook handler, so signature verification,
+ * idempotency and the booking state machine are all genuinely exercised.
  *
- * `outcome` lets the UI offer an explicit "simulate failure" path so the
- * failure branch is testable. It is not a way to fake success: success still
- * has to survive every check the webhook applies.
+ * Refused outright when real Razorpay keys are configured: with a live
+ * gateway this would be a way to confirm a booking without paying. The live
+ * path is Checkout in the browser followed by /api/payments/verify.
  */
 const confirmPayment = asyncHandler(async (req, res) => {
+  if (gateway.isLive) {
+    throw ApiError.forbidden(
+      'This endpoint only exists for the payment simulator. Complete payment through Razorpay Checkout.'
+    );
+  }
+
   const { bookingId, orderId, paymentMethod = 'UPI', outcome = 'success' } = req.body;
 
   const rows = await db.query(
@@ -220,9 +229,12 @@ const confirmPayment = asyncHandler(async (req, res) => {
   }
 
   const succeeded = outcome === 'success';
+  const resolvedOrder = orderId
+    || (await gateway.createOrder(bookingId, Number(booking.total_amount), booking.booking_ref)).orderId;
+
   const { rawBody, signature } = gateway.buildWebhookEvent({
     bookingId: Number(bookingId),
-    orderId: orderId || gateway.createOrder(bookingId, Number(booking.total_amount)).orderId,
+    orderId: resolvedOrder,
     transactionId: gateway.newTransactionId(),
     amount: Number(booking.total_amount),
     paymentMethod,

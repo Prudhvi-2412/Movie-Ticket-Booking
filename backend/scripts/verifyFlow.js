@@ -38,6 +38,53 @@ const check = (label, condition, detail = '') => {
 
 const section = (title) => console.log(`\n${c.bold(title)}`);
 
+/**
+ * Delivers a webhook shaped exactly as Razorpay sends one, signed with the
+ * same secret the server verifies against.
+ *
+ * Only legitimate because this script runs server-side and can read the
+ * environment. It is not a bypass: the request goes through the public
+ * webhook endpoint and every check it applies.
+ */
+const deliverRazorpayWebhook = async ({ bookingId, orderId, bookingRef, captured = true, paymentId }) => {
+  const config = require('../src/config/env');
+  const secret = config.RAZORPAY_WEBHOOK_SECRET || config.WEBHOOK_SECRET;
+
+  const payload = {
+    entity: 'event',
+    event: captured ? 'payment.captured' : 'payment.failed',
+    payload: {
+      payment: {
+        entity: {
+          id: paymentId || `pay_verify_${crypto.randomBytes(7).toString('hex')}`,
+          entity: 'payment',
+          order_id: orderId,
+          status: captured ? 'captured' : 'failed',
+          method: 'upi',
+          currency: 'INR',
+          // Razorpay echoes back the notes set at order creation — that is how
+          // the handler maps a payment to a booking.
+          notes: { bookingId: String(bookingId), bookingRef: String(bookingRef || '') },
+          error_description: captured ? null : 'Simulated decline'
+        }
+      }
+    }
+  };
+
+  const rawBody = JSON.stringify(payload);
+  const signature = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+
+  const res = await fetch(`${API}/api/webhooks/payment`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-razorpay-signature': signature },
+    body: rawBody
+  });
+
+  let json = null;
+  try { json = await res.json(); } catch { /* empty body */ }
+  return { status: res.status, body: json };
+};
+
 const call = async (method, path, { token, body } = {}) => {
   const res = await fetch(`${API}${path}`, {
     method,
@@ -313,6 +360,12 @@ const run = async () => {
 
   // ---------------------------------------------------------------
   section('8. Payment & webhook');
+  const paymentConfig = await call('GET', '/api/payments/config');
+  console.log(c.dim(`  gateway: ${paymentConfig.body?.provider}${paymentConfig.body?.testMode ? ' (test mode)' : ''}`));
+  check('gateway configuration is exposed', paymentConfig.status === 200 && !!paymentConfig.body?.provider);
+  check('config exposes no secret',
+    !JSON.stringify(paymentConfig.body).toLowerCase().includes('secret'));
+
   const initiate = await call('POST', '/api/payments/initiate', {
     token: tokenA, body: { bookingId, paymentMethod: 'UPI' }
   });
@@ -341,16 +394,46 @@ const run = async () => {
   });
   check('webhook with NO signature is rejected (401)', unsigned.status === 401, `got ${unsigned.status}`);
 
-  const pay = await call('POST', '/api/payments/confirm', {
-    token: tokenA,
-    body: { bookingId, orderId: initiate.body?.checkoutSession?.orderId, paymentMethod: 'UPI', outcome: 'success' }
-  });
-  check('payment confirms the booking', pay.status === 200 && pay.body?.status === 'Confirmed',
-    JSON.stringify(pay.body));
+  const orderId = initiate.body?.checkoutSession?.orderId;
 
-  const payAgain = await call('POST', '/api/payments/confirm', {
-    token: tokenA, body: { bookingId, paymentMethod: 'UPI', outcome: 'success' }
-  });
+  /*
+   * Completing the payment.
+   *
+   * Against the simulator this posts to /payments/confirm. Against real
+   * Razorpay that endpoint is refused by design — a live gateway must not have
+   * a "just confirm it" route — and the customer-facing path runs through
+   * Checkout in a browser, which a script cannot drive.
+   *
+   * So in Razorpay mode the run completes the booking the way Razorpay itself
+   * would: by delivering a signed `payment.captured` webhook. That is the
+   * authoritative path in production, and it exercises signature verification,
+   * idempotency and the booking state machine for real. This script runs on
+   * the server, so it legitimately holds the webhook secret.
+   */
+  const provider = paymentConfig.body?.provider;
+  let pay;
+
+  if (provider === 'razorpay') {
+    pay = await deliverRazorpayWebhook({ bookingId, orderId, bookingRef });
+    check('payment confirms the booking (via signed Razorpay webhook)',
+      pay.status === 200, JSON.stringify(pay.body));
+  } else {
+    pay = await call('POST', '/api/payments/confirm', {
+      token: tokenA, body: { bookingId, orderId, paymentMethod: 'UPI', outcome: 'success' }
+    });
+    check('payment confirms the booking', pay.status === 200 && pay.body?.status === 'Confirmed',
+      JSON.stringify(pay.body));
+  }
+
+  const bookingAfterPay = await call('GET', `/api/bookings/${bookingId}`, { token: tokenA });
+  check('booking reaches Confirmed', bookingAfterPay.body?.booking?.status === 'Confirmed',
+    bookingAfterPay.body?.booking?.status);
+
+  const payAgain = provider === 'razorpay'
+    ? await deliverRazorpayWebhook({ bookingId, orderId, bookingRef })
+    : await call('POST', '/api/payments/confirm', {
+      token: tokenA, body: { bookingId, paymentMethod: 'UPI', outcome: 'success' }
+    });
   check('paying twice is a harmless no-op', payAgain.status === 200,
     JSON.stringify(payAgain.body));
 
