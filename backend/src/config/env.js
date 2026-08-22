@@ -64,8 +64,20 @@ module.exports = {
   KAFKA_BROKERS: (process.env.KAFKA_BROKERS || 'localhost:9094').split(',').map((b) => b.trim()),
   KAFKA_CLIENT_ID: process.env.KAFKA_CLIENT_ID || 'cinewave-backend',
 
-  // Payment gateway webhook signing key
+  // Payment gateway webhook signing key (used by the built-in simulator, and
+  // as the webhook fallback when RAZORPAY_WEBHOOK_SECRET is not set)
   WEBHOOK_SECRET: requireSecret('WEBHOOK_SECRET', devSecret('webhook')),
+
+  // Razorpay. When key id and secret are both present the app uses real
+  // Razorpay; otherwise it falls back to the local simulator so tests and CI
+  // can run without an account or network access.
+  //
+  // KEY_ID is public and is sent to the browser. KEY_SECRET signs the Checkout
+  // callback. WEBHOOK_SECRET is a separate value set in the Razorpay dashboard
+  // and signs webhook bodies — it is not the key secret.
+  RAZORPAY_KEY_ID: process.env.RAZORPAY_KEY_ID || '',
+  RAZORPAY_KEY_SECRET: process.env.RAZORPAY_KEY_SECRET || '',
+  RAZORPAY_WEBHOOK_SECRET: process.env.RAZORPAY_WEBHOOK_SECRET || '',
 
   // Booking economics — server-side source of truth for order totals
   CONVENIENCE_FEE_PER_SEAT: toNumber(process.env.CONVENIENCE_FEE_PER_SEAT, 20),

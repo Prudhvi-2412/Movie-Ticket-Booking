@@ -2,6 +2,7 @@ const db = require('../config/db');
 const config = require('../config/env');
 const gateway = require('../services/paymentGateway');
 const { handlePaymentWebhook } = require('./webhookController');
+const { settleConfirmedBooking } = require('../services/bookingSettlement');
 const { getRemainingLockSeconds } = require('../redis/seatLock');
 const { ApiError, asyncHandler } = require('../utils/ApiError');
 const logger = require('../utils/logger');
@@ -45,25 +46,150 @@ const initiatePayment = asyncHandler(async (req, res) => {
     throw ApiError.gone('Your seat hold has expired. Please select your seats again.', { code: 'HOLD_EXPIRED' });
   }
 
-  const order = gateway.createOrder(bookingId, Number(booking.total_amount));
+  const order = await gateway.createOrder(bookingId, Number(booking.total_amount), booking.booking_ref);
 
+  // Remember the order so the callback can be matched back to this booking
+  // without trusting the browser's claim about which booking it paid for.
   await db.query(
-    "UPDATE bookings SET status = 'PaymentProcessing' WHERE booking_id = ? AND status IN ('Pending', 'PaymentFailed')",
+    `UPDATE bookings SET status = 'PaymentProcessing'
+      WHERE booking_id = ? AND status IN ('Pending', 'PaymentFailed')`,
     [bookingId]
+  );
+  await db.query(
+    `INSERT INTO payments (booking_id, payment_method, transaction_id, idempotency_key,
+                           gateway_order_id, amount, payment_status)
+     VALUES (?, ?, ?, ?, ?, ?, 'Pending')
+     ON DUPLICATE KEY UPDATE gateway_order_id = VALUES(gateway_order_id), updated_at = NOW()`,
+    [bookingId, paymentMethod, `intent_${order.orderId}`, `intent_${order.orderId}`,
+      order.orderId, booking.total_amount]
   );
 
   res.json({
     success: true,
     checkoutSession: {
+      provider: gateway.provider(),
+      // Publishable key only — Checkout needs it in the browser. The key
+      // secret and the webhook secret never leave the server.
+      keyId: gateway.publicKey(),
       orderId: order.orderId,
       bookingId,
       bookingRef: booking.booking_ref,
       amount: order.amount,
+      amountInPaise: gateway.toPaise(order.amount),
       currency: order.currency,
       paymentMethod,
-      expiresInSeconds: remaining
+      expiresInSeconds: remaining,
+      customer: {
+        name: req.user.email.split('@')[0],
+        email: req.user.email
+      },
+      description: `${booking.booking_ref} · CineWave tickets`
     }
   });
+});
+
+/**
+ * POST /api/payments/verify
+ *
+ * The Razorpay Checkout success handler posts here with the three fields the
+ * widget returns. The signature is HMAC-SHA256 of "<order_id>|<payment_id>"
+ * keyed with the key secret, so only Razorpay could have produced it.
+ *
+ * This is the *fast* path — it exists so the customer sees confirmation
+ * immediately instead of waiting on a webhook. The webhook remains the
+ * authoritative source and may arrive before or after this; both funnel into
+ * ConfirmBookingPayment, which is idempotent, so whichever lands first wins
+ * and the other is a no-op.
+ */
+const verifyPayment = asyncHandler(async (req, res) => {
+  const { bookingId, razorpay_order_id: orderId, razorpay_payment_id: paymentId,
+    razorpay_signature: signature } = req.body;
+
+  const rows = await db.query(
+    'SELECT * FROM bookings WHERE booking_id = ? AND user_id = ?',
+    [bookingId, req.user.userId]
+  );
+  if (rows.length === 0) throw ApiError.notFound('Booking not found.');
+  const booking = rows[0];
+
+  if (booking.status === 'Confirmed') {
+    // The webhook got here first. Nothing to do.
+    return res.json({
+      success: true, bookingId: Number(bookingId),
+      bookingRef: booking.booking_ref, status: 'Confirmed',
+      message: 'This booking is already confirmed.'
+    });
+  }
+
+  if (!gateway.verifyCheckoutSignature({ orderId, paymentId, signature })) {
+    logger.warn('Rejected a payment callback with an invalid signature (booking %s)', bookingId);
+    throw ApiError.unauthorized('We could not verify that payment. Nothing has been charged.');
+  }
+
+  // The order must be the one this server created for this booking — without
+  // this, a signature from any of the caller's own orders would confirm any of
+  // their bookings, including a cheaper one.
+  const intents = await db.query(
+    'SELECT payment_id FROM payments WHERE booking_id = ? AND gateway_order_id = ?',
+    [bookingId, orderId]
+  );
+  if (intents.length === 0) {
+    throw ApiError.badRequest('That payment does not belong to this booking.');
+  }
+
+  // Trust Razorpay's record of the amount, not the browser's.
+  let amount = Number(booking.total_amount);
+  let method = 'UPI';
+  if (gateway.isLive) {
+    const payment = await gateway.fetchPayment(paymentId);
+    if (payment.status !== 'captured' && payment.status !== 'authorized') {
+      throw ApiError.badRequest(`Payment is ${payment.status}, not captured.`);
+    }
+    amount = gateway.toRupees(payment.amount);
+    method = payment.method === 'card' ? 'Credit Card'
+      : payment.method === 'netbanking' ? 'Net Banking' : 'UPI';
+
+    if (Math.abs(amount - Number(booking.total_amount)) > 0.01) {
+      logger.error('Amount mismatch on booking %s: paid %s, expected %s',
+        bookingId, amount, booking.total_amount);
+      throw ApiError.badRequest('The amount paid does not match this booking.');
+    }
+  }
+
+  await db.query('CALL ConfirmBookingPayment(?, ?, ?, ?, ?, ?)', [
+    bookingId, method, paymentId, `idem_${orderId}`, orderId, amount
+  ]);
+
+  await settleConfirmedBooking(bookingId, booking);
+
+  const updated = await db.query(
+    'SELECT status, booking_ref FROM bookings WHERE booking_id = ?', [bookingId]
+  );
+
+  return res.json({
+    success: true,
+    message: 'Payment successful. Your booking is confirmed.',
+    bookingId: Number(bookingId),
+    bookingRef: updated[0].booking_ref,
+    status: updated[0].status
+  });
+});
+
+/**
+ * POST /api/payments/cancel
+ * Called when the customer dismisses the Checkout widget. Puts the booking
+ * back to Pending so they can retry without losing their seat hold.
+ */
+const cancelPaymentAttempt = asyncHandler(async (req, res) => {
+  const { bookingId } = req.body;
+
+  await db.query(
+    `UPDATE bookings SET status = 'Pending'
+      WHERE booking_id = ? AND user_id = ? AND status = 'PaymentProcessing'`,
+    [bookingId, req.user.userId]
+  );
+
+  res.json({ success: true, message: 'Payment cancelled. Your seats are still held.' });
 });
 
 /**
@@ -162,4 +288,11 @@ const getPaymentsForBooking = asyncHandler(async (req, res) => {
   res.json({ success: true, payments });
 });
 
-module.exports = { initiatePayment, confirmPayment, getPaymentsForBooking, PAYABLE_STATUSES, config };
+module.exports = {
+  initiatePayment,
+  verifyPayment,
+  cancelPaymentAttempt,
+  confirmPayment,
+  getPaymentsForBooking,
+  PAYABLE_STATUSES
+};

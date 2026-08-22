@@ -1,11 +1,8 @@
 const db = require('../config/db');
-const config = require('../config/env');
-const { safeCompare } = require('../utils/crypto');
-const { signPayload } = require('../services/paymentGateway');
-const { releaseSeatLocks } = require('../redis/seatLock');
-const { emitPaymentSuccessful, emitBookingConfirmed, emitSeatReleased } = require('../kafka/producer');
+const gateway = require('../services/paymentGateway');
+const { settleConfirmedBooking, settleFailedBooking } = require('../services/bookingSettlement');
 const logger = require('../utils/logger');
-const { webhookEventsCounter, bookingCounter } = require('../utils/metrics');
+const { webhookEventsCounter } = require('../utils/metrics');
 
 /**
  * POST /api/webhooks/payment
@@ -27,14 +24,20 @@ const { webhookEventsCounter, bookingCounter } = require('../utils/metrics');
  *    which locks the booking row and refuses to confirm one that was
  *    cancelled or has expired.
  *
- * The route is mounted with express.raw, so req.body is a Buffer.
+ * Handles both Razorpay's payload shape and the simulator's; the gateway
+ * service normalises them so everything below sees one envelope.
+ *
+ * The route is mounted with express.raw, so req.body is a Buffer — the
+ * signature covers the exact bytes sent, and re-serialising a parsed object
+ * (different key order, different whitespace) yields a different digest.
  */
 const handlePaymentWebhook = async (req, res, next) => {
   const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body || {}));
-  const signature = req.get('x-webhook-signature');
+  // Razorpay signs with x-razorpay-signature; the simulator uses its own header.
+  const signature = req.get('x-razorpay-signature') || req.get('x-webhook-signature');
 
   // --- 1. Verify before parsing --------------------------------------
-  if (!signature || !safeCompare(signature, signPayload(rawBody))) {
+  if (!signature || !gateway.verifyWebhookSignature(rawBody, signature)) {
     webhookEventsCounter.inc({ event_type: 'payment', status: 'invalid_signature' });
     logger.warn('Rejected payment webhook with a missing or invalid signature');
     return res.status(401).json({ success: false, message: 'Invalid webhook signature.' });
@@ -42,7 +45,7 @@ const handlePaymentWebhook = async (req, res, next) => {
 
   let event;
   try {
-    event = JSON.parse(rawBody.toString('utf8'));
+    event = gateway.parseWebhookEvent(JSON.parse(rawBody.toString('utf8')));
   } catch {
     return res.status(400).json({ success: false, message: 'Malformed webhook payload.' });
   }
@@ -105,12 +108,6 @@ const handlePaymentWebhook = async (req, res, next) => {
     }
     const booking = bookingRows[0];
 
-    const seatRows = await db.query(
-      'SELECT seat_id FROM booking_seats WHERE booking_id = ? AND is_active = 1',
-      [bookingId]
-    );
-    const seatIds = seatRows.map((r) => r.seat_id);
-
     if (succeeded) {
       await db.query('CALL ConfirmBookingPayment(?, ?, ?, ?, ?, ?)', [
         bookingId,
@@ -121,25 +118,9 @@ const handlePaymentWebhook = async (req, res, next) => {
         amount ?? booking.total_amount
       ]);
 
-      // The seats are committed in MySQL now, so the temporary holds are
-      // redundant. Released without an owner filter because this runs as the
-      // system, not as the customer.
-      if (seatIds.length) await releaseSeatLocks(booking.show_id, seatIds);
-
-      bookingCounter.inc({ status: 'confirmed' });
+      // Shared with the Checkout callback path — see bookingSettlement.js.
+      await settleConfirmedBooking(bookingId, booking, { transactionId, amount, paymentMethod });
       webhookEventsCounter.inc({ event_type: eventType || 'payment', status: 'success' });
-
-      await emitPaymentSuccessful({ bookingId, transactionId, amount, paymentMethod });
-      await emitBookingConfirmed({
-        bookingId,
-        bookingRef: booking.booking_ref,
-        userId: booking.user_id,
-        showId: booking.show_id,
-        seatIds,
-        totalAmount: booking.total_amount
-      });
-
-      logger.info('Booking %s confirmed via webhook %s', booking.booking_ref, eventId);
     } else {
       await db.query('CALL FailBookingPayment(?, ?, ?, ?, ?)', [
         bookingId,
@@ -149,17 +130,8 @@ const handlePaymentWebhook = async (req, res, next) => {
         failureReason || 'Payment failed'
       ]);
 
-      // A failed payment must put the seats back on sale immediately --
-      // the old handler marked the booking Cancelled and left the Redis
-      // locks in place, so the seats stayed invisible until the TTL lapsed.
-      if (seatIds.length) {
-        await releaseSeatLocks(booking.show_id, seatIds);
-        await emitSeatReleased({ showId: booking.show_id, seatIds, reason: 'PAYMENT_FAILED' });
-      }
-
-      bookingCounter.inc({ status: 'payment_failed' });
+      await settleFailedBooking(bookingId, booking);
       webhookEventsCounter.inc({ event_type: eventType || 'payment', status: 'payment_failed' });
-      logger.info('Booking %s marked failed via webhook %s', booking.booking_ref, eventId);
     }
 
     await db.query(
