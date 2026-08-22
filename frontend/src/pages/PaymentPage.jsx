@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  CreditCard, Smartphone, Landmark, ShieldCheck, Lock, ChevronLeft, TimerOff, XCircle
+  CreditCard, Smartphone, Landmark, ShieldCheck, Lock, ChevronLeft, TimerOff, XCircle,
+  FlaskConical, CheckCircle2
 } from 'lucide-react';
 import { api, ApiError } from '../lib/api';
 import { useToast } from '../context/ToastContext';
@@ -34,6 +35,7 @@ export function PaymentPage() {
   // than assuming one or hardcoding a key.
   const { data: paymentConfig } = useAsync(() => api.get('/payments/config', { auth: false }));
   const isRazorpay = paymentConfig?.provider === 'razorpay';
+  const allowsBypass = paymentConfig?.allowsTestBypass === true;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -134,7 +136,9 @@ export function PaymentPage() {
 
     try {
       if (isRazorpay && outcome === 'success') await payWithRazorpay();
-      else await payWithSimulator(outcome);
+      // 'mark-paid' is the test-mode shortcut: it deliberately skips Checkout
+      // and confirms through the same signed-callback path the simulator uses.
+      else await payWithSimulator(outcome === 'mark-paid' ? 'success' : outcome);
     } catch (err) {
       if (err instanceof ApiError && err.isExpired) {
         setExpired(true);
@@ -303,16 +307,44 @@ export function PaymentPage() {
               Pay {formatCurrency(booking.total_amount)}
             </Button>
 
-            {/* Only meaningful against the simulator — Razorpay test mode has
-                its own declined-payment instruments. */}
-            {!isRazorpay && (
-              <button
-                onClick={() => pay('failure')}
-                disabled={processing || expired}
-                className="w-full text-2xs text-ink-500 hover:text-ink-300 transition-colors py-1 disabled:opacity-40"
-              >
-                Simulate a declined payment (for testing the failure path)
-              </button>
+            {/*
+              Test-mode shortcuts. The server decides whether these exist
+              (`allowsTestBypass`), and it says yes only for an `rzp_test_`
+              key — so swapping in live credentials removes them with no
+              other change.
+            */}
+            {allowsBypass && (
+              <div className="rounded-xl border border-dashed border-caution-500/40 bg-caution-500/5 p-3 space-y-2">
+                <p className="text-2xs font-semibold uppercase tracking-wide text-caution-400 flex items-center gap-1.5">
+                  <FlaskConical className="w-3 h-3" aria-hidden /> Test mode only
+                </p>
+
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => pay('mark-paid')}
+                  loading={processing}
+                  disabled={expired}
+                  className="w-full justify-center"
+                  icon={CheckCircle2}
+                >
+                  Mark as paid &amp; continue
+                </Button>
+
+                <button
+                  onClick={() => pay('failure')}
+                  disabled={processing || expired}
+                  className="w-full text-2xs text-ink-500 hover:text-ink-300 transition-colors py-0.5 disabled:opacity-40"
+                >
+                  Or simulate a declined payment
+                </button>
+
+                <p className="text-2xs text-ink-500 leading-relaxed">
+                  Skips the gateway and confirms the booking directly. The
+                  booking, seats and ticket are all created for real — only the
+                  payment is not. This disappears on live credentials.
+                </p>
+              </div>
             )}
           </div>
         </div>
