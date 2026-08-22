@@ -1,6 +1,8 @@
 const db = require('../config/db');
 const gateway = require('../services/paymentGateway');
-const { settleConfirmedBooking, settleFailedBooking } = require('../services/bookingSettlement');
+const {
+  settleConfirmedBooking, settleFailedBooking, activeSeatIds
+} = require('../services/bookingSettlement');
 const logger = require('../utils/logger');
 const { webhookEventsCounter } = require('../utils/metrics');
 
@@ -108,6 +110,10 @@ const handlePaymentWebhook = async (req, res, next) => {
     }
     const booking = bookingRows[0];
 
+    // Captured before either procedure runs: FailBookingPayment deactivates
+    // these rows, so reading them afterwards would find none to release.
+    const heldSeatIds = await activeSeatIds(bookingId);
+
     if (succeeded) {
       await db.query('CALL ConfirmBookingPayment(?, ?, ?, ?, ?, ?)', [
         bookingId,
@@ -130,7 +136,7 @@ const handlePaymentWebhook = async (req, res, next) => {
         failureReason || 'Payment failed'
       ]);
 
-      await settleFailedBooking(bookingId, booking);
+      await settleFailedBooking(bookingId, booking, heldSeatIds);
       webhookEventsCounter.inc({ event_type: eventType || 'payment', status: 'payment_failed' });
     }
 

@@ -58,10 +58,12 @@ const settleConfirmedBooking = async (bookingId, booking, payment = {}) => {
 /**
  * Called once a payment has failed. Puts the seats back on sale immediately
  * rather than leaving them invisible until the Redis TTL lapses.
+ *
+ * `seatIds` must be captured by the caller *before* FailBookingPayment runs:
+ * that procedure sets booking_seats.is_active = 0, so reading them here would
+ * find nothing and quietly release no locks at all.
  */
-const settleFailedBooking = async (bookingId, booking) => {
-  const seatIds = await activeSeatIds(bookingId);
-
+const settleFailedBooking = async (bookingId, booking, seatIds) => {
   if (seatIds.length) {
     await releaseSeatLocks(booking.show_id, seatIds);
     await emitSeatReleased({ showId: booking.show_id, seatIds, reason: 'PAYMENT_FAILED' });
