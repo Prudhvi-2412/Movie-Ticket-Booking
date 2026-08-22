@@ -197,21 +197,21 @@ const cancelPaymentAttempt = asyncHandler(async (req, res) => {
 });
 
 /**
- * POST /api/payments/confirm  — simulator only.
+ * POST /api/payments/confirm  — test mode only.
  *
- * Stands in for the customer completing (or abandoning) payment on a hosted
- * page. The server builds and signs the callback the gateway would send, then
- * feeds it through the real webhook handler, so signature verification,
- * idempotency and the booking state machine are all genuinely exercised.
+ * Marks a booking as paid without a real payment. The server builds and signs
+ * the callback the gateway would send and feeds it through the real webhook
+ * handler, so signature verification, idempotency and the booking state
+ * machine are all genuinely exercised — only the money is missing.
  *
- * Refused outright when real Razorpay keys are configured: with a live
- * gateway this would be a way to confirm a booking without paying. The live
- * path is Checkout in the browser followed by /api/payments/verify.
+ * Exists so the flow can be demonstrated and walked end to end without
+ * completing a UPI or card payment every time. Refused outright on live
+ * Razorpay credentials, where it would be a way to get free tickets.
  */
 const confirmPayment = asyncHandler(async (req, res) => {
-  if (gateway.isLive) {
+  if (!gateway.allowsTestBypass()) {
     throw ApiError.forbidden(
-      'This endpoint only exists for the payment simulator. Complete payment through Razorpay Checkout.'
+      'Marking a booking as paid is only possible in test mode. Complete payment through Razorpay Checkout.'
     );
   }
 

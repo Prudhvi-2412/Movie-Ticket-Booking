@@ -37,6 +37,21 @@ if (isLive) {
 
 const provider = () => (isLive ? 'razorpay' : 'simulator');
 
+/** True only for Razorpay test credentials. */
+const isTestMode = () => !isLive || config.RAZORPAY_KEY_ID.startsWith('rzp_test');
+
+/**
+ * Whether "mark as paid" — confirming a booking without a real payment — is
+ * permitted. Useful for demos and for walking the flow without completing a
+ * UPI or card payment every time.
+ *
+ * Gated on the key *prefix* rather than on NODE_ENV or a settable flag,
+ * because that is the one condition that cannot be got wrong: a live key
+ * starts with `rzp_live_`, so swapping the credentials switches this off with
+ * no other change and no way to accidentally re-enable it in production.
+ */
+const allowsTestBypass = () => !isLive || config.RAZORPAY_KEY_ID.startsWith('rzp_test');
+
 /** Razorpay works in the smallest currency unit. ₹704.00 -> 70400 paise. */
 const toPaise = (rupees) => Math.round(Number(rupees) * 100);
 const toRupees = (paise) => Number(paise) / 100;
@@ -194,6 +209,8 @@ const buildWebhookEvent = ({
 module.exports = {
   isLive,
   provider,
+  isTestMode,
+  allowsTestBypass,
   publicKey: () => config.RAZORPAY_KEY_ID || null,
   createOrder,
   verifyCheckoutSignature,

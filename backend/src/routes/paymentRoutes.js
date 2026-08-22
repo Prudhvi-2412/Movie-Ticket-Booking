@@ -20,7 +20,10 @@ router.get('/config', (req, res) => {
     success: true,
     provider: gateway.provider(),
     keyId: gateway.publicKey(),
-    testMode: (gateway.publicKey() || '').startsWith('rzp_test')
+    testMode: gateway.isTestMode(),
+    // Drives whether the UI offers "mark as paid". Decided by the server so
+    // the button cannot be conjured up client-side against live credentials.
+    allowsTestBypass: gateway.allowsTestBypass()
   });
 });
 
