@@ -487,8 +487,10 @@ const run = async () => {
   }
 
   console.log(c.dim(
-    `  note: test customer accounts (custa/custb/sneak.${suffix}@example.com) remain — ` +
-    'accounts are never hard-deleted so their bookings stay auditable.'
+    `  note: test accounts (custa/custb/sneak.${suffix}@example.com) remain, and any\n` +
+    '  fixture with a paid booking against it is left disabled rather than deleted —\n' +
+    '  that is the same rule the API applies to a human admin. Run "npm run db:reset"\n' +
+    '  for a clean slate.'
   ));
 
   // ---------------------------------------------------------------

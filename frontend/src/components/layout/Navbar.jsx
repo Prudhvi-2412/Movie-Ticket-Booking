@@ -64,8 +64,13 @@ export function Navbar() {
                        bg-ink-850 text-sm text-ink-100 hover:border-ink-500 transition-colors shrink-0"
             aria-label={city ? `Selected city: ${city}. Change city` : 'Choose your city'}
           >
-            <MapPin className="w-4 h-4 text-brand-500" aria-hidden />
-            <span className="hidden sm:inline max-w-[7rem] truncate font-medium">{city || 'Select city'}</span>
+            <MapPin className="w-4 h-4 text-brand-500 shrink-0" aria-hidden />
+            {/* Shown at every width: which city you are browsing changes what
+                the whole app displays, so hiding it on mobile loses the one
+                piece of context the customer most needs. */}
+            <span className="max-w-[4.5rem] sm:max-w-[7rem] truncate font-medium">
+              {city || 'Select city'}
+            </span>
             <ChevronDown className="w-3.5 h-3.5 text-ink-400" aria-hidden />
           </button>
 

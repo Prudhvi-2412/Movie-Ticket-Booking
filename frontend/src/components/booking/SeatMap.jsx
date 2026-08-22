@@ -81,8 +81,12 @@ export function SeatMap({ seatMap = [], selectedIds = new Set(), onToggle, maxSe
         </p>
       </div>
 
-      {/* Seats */}
-      <div className="overflow-x-auto no-scrollbar pb-3">
+      {/*
+        Wide auditoriums overflow on a phone, so the map scrolls horizontally.
+        The faded edge is the affordance that says so — with the scrollbar
+        hidden there is otherwise nothing to indicate more seats exist.
+      */}
+      <div className="overflow-x-auto no-scrollbar scroll-fade-x pb-3">
         <div className="min-w-fit mx-auto space-y-6">
           {bands.map((band) => (
             <div key={`${band.seatType}-${band.price}`}>
