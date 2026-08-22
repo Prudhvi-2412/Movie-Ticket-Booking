@@ -1,0 +1,28 @@
+# Build context exclusions.
+#
+# Keeping node_modules and .env out matters twice over: the image would
+# otherwise carry host-built native modules and, worse, bake real secrets into
+# a layer that anyone who pulls the image can read back.
+
+**/node_modules
+**/dist
+**/build
+**/coverage
+
+**/.env
+**/.env.*
+!**/.env.example
+
+.git
+.github
+.claude
+**/*.log
+**/.DS_Store
+**/.vscode
+**/.idea
+
+# Docs and assets not needed at runtime
+*.md
+!README.md
+ER_DIAGRAM.png
+load-tests

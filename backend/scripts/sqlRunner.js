@@ -4,7 +4,14 @@ const crypto = require('crypto');
 const mysql = require('mysql2/promise');
 const config = require('../src/config/env');
 
-const SQL_ROOT = path.resolve(__dirname, '../../MovieBookingSystem');
+/**
+ * Where the .sql files live. Defaults to the repo layout; the Docker image
+ * copies them next to the app and sets SQL_ROOT, so the runner works in both
+ * without a path that silently resolves to nothing in one of them.
+ */
+const SQL_ROOT = process.env.SQL_ROOT
+  ? path.resolve(process.env.SQL_ROOT)
+  : path.resolve(__dirname, '../../MovieBookingSystem');
 
 /**
  * Files are applied in this order. Views come before routines because

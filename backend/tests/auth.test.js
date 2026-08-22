@@ -2,7 +2,7 @@ const request = require('supertest');
 const { app, unique, registerCustomer, authed } = require('./helpers');
 
 describe('Authentication and authorisation', () => {
-  const email = `auth.${unique()}@test.cinewave`;
+  const email = `auth.${unique()}@cinewave-test.com`;
   const password = 'Customer@123';
   let tokens;
 
@@ -31,7 +31,7 @@ describe('Authentication and authorisation', () => {
     // Self-service registration must not be a path to the admin console.
     const res = await request(app).post('/api/auth/register').send({
       full_name: 'Would-be Admin',
-      email: `escalate.${unique()}@test.cinewave`,
+      email: `escalate.${unique()}@cinewave-test.com`,
       password,
       role: 'Admin'
     });
@@ -43,7 +43,7 @@ describe('Authentication and authorisation', () => {
   it('rejects a weak password', async () => {
     const res = await request(app).post('/api/auth/register').send({
       full_name: 'Weak Password',
-      email: `weak.${unique()}@test.cinewave`,
+      email: `weak.${unique()}@cinewave-test.com`,
       password: 'short'
     });
 
@@ -73,7 +73,7 @@ describe('Authentication and authorisation', () => {
   it('returns the same message for an unknown account', async () => {
     // Identical wording, so the endpoint cannot be used to enumerate emails.
     const res = await request(app).post('/api/auth/login')
-      .send({ email: `ghost.${unique()}@test.cinewave`, password });
+      .send({ email: `ghost.${unique()}@cinewave-test.com`, password });
 
     expect(res.status).toBe(401);
     expect(res.body.message).toBe('Incorrect email or password.');
@@ -97,17 +97,22 @@ describe('Authentication and authorisation', () => {
   });
 
   it('exchanges a refresh token for a new access token', async () => {
+    // Take a current pair: signing in earlier in this file already rotated
+    // the token issued at registration, which is the behaviour asserted below.
+    const signIn = await request(app).post('/api/auth/login').send({ email, password });
     const res = await request(app).post('/api/auth/refresh-token')
-      .send({ token: tokens.refreshToken });
+      .send({ token: signIn.body.refreshToken });
 
     expect(res.status).toBe(200);
     expect(res.body.accessToken).toEqual(expect.any(String));
+    tokens = { ...tokens, staleRefresh: signIn.body.refreshToken };
   });
 
-  it('rejects a refresh token that has been rotated away', async () => {
-    // The previous test rotated it; the stale one must no longer work.
+  it('rejects a refresh token that has already been used', async () => {
+    // Refresh tokens rotate on use, so replaying one must fail — that is what
+    // limits the damage if a token is ever captured.
     const res = await request(app).post('/api/auth/refresh-token')
-      .send({ token: tokens.refreshToken });
+      .send({ token: tokens.staleRefresh });
 
     expect(res.status).toBe(401);
   });

@@ -29,7 +29,7 @@ const loginAdmin = async () => {
 };
 
 const registerCustomer = async (label = 'user') => {
-  const email = `${label}.${unique()}@test.cinewave`;
+  const email = `${label}.${unique()}@cinewave-test.com`;
   const res = await request(app).post('/api/auth/register').send({
     full_name: `Test ${label}`,
     email,

@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('../config/db');
@@ -8,11 +9,28 @@ const { encrypt, decrypt } = require('../utils/crypto');
 
 const BCRYPT_ROUNDS = 10;
 
+/**
+ * Issues an access/refresh pair.
+ *
+ * The `jti` is what makes refresh-token rotation mean anything. JWT's `iat`
+ * has one-second resolution, so signing the same payload twice inside the
+ * same second produced byte-identical tokens — the "rotated" token equalled
+ * the old one, and a captured refresh token stayed valid after use. A random
+ * id per issuance guarantees every token is distinct.
+ */
 const generateTokens = (user) => {
-  const payload = { userId: user.user_id, email: user.email, role: user.role };
+  const base = { userId: user.user_id, email: user.email, role: user.role };
   return {
-    accessToken: jwt.sign(payload, config.JWT_SECRET, { expiresIn: config.JWT_EXPIRES_IN }),
-    refreshToken: jwt.sign(payload, config.JWT_REFRESH_SECRET, { expiresIn: config.JWT_REFRESH_EXPIRES_IN })
+    accessToken: jwt.sign(
+      { ...base, jti: crypto.randomUUID() },
+      config.JWT_SECRET,
+      { expiresIn: config.JWT_EXPIRES_IN }
+    ),
+    refreshToken: jwt.sign(
+      { ...base, jti: crypto.randomUUID() },
+      config.JWT_REFRESH_SECRET,
+      { expiresIn: config.JWT_REFRESH_EXPIRES_IN }
+    )
   };
 };
 

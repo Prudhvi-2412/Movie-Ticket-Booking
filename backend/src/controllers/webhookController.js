@@ -83,7 +83,13 @@ const handlePaymentWebhook = async (req, res, next) => {
   }
 
   // --- 3. Apply the outcome -------------------------------------------
-  const succeeded = status === 'SUCCESS' || eventType === 'payment.captured';
+  // An explicit status always wins. Deciding with
+  // `status === 'SUCCESS' || eventType === 'payment.captured'` meant a
+  // declined payment delivered under a capture-shaped event type was applied
+  // as a success and confirmed the booking without payment.
+  const succeeded = status
+    ? ['SUCCESS', 'captured', 'CAPTURED'].includes(status)
+    : eventType === 'payment.captured';
 
   try {
     const bookingRows = await db.query(
@@ -167,10 +173,38 @@ const handlePaymentWebhook = async (req, res, next) => {
       bookingId
     });
   } catch (err) {
+    /*
+     * A SIGNAL from one of the booking procedures ("this booking can no
+     * longer be paid for", "the seat hold has expired") is a business
+     * outcome, not a server fault. Answering 500 would make the gateway
+     * redeliver the same event indefinitely against a booking that will
+     * never accept it. The event is recorded as IGNORED and acknowledged.
+     *
+     * A capture landing on a cancelled booking does mean money was taken
+     * that needs refunding, so it is logged at warn level for reconciliation
+     * — webhook_logs WHERE status = 'IGNORED' is the queue to work through.
+     */
+    const isBusinessRule = err.sqlState === '45000';
+    const logStatus = isBusinessRule ? 'IGNORED' : 'FAILED';
+
     await db.query(
-      "UPDATE webhook_logs SET status = 'FAILED', error_message = ?, processed_at = NOW() WHERE event_id = ?",
-      [String(err.message).slice(0, 500), eventId]
+      `UPDATE webhook_logs SET status = ?, error_message = ?, processed_at = NOW() WHERE event_id = ?`,
+      [logStatus, String(err.message).slice(0, 500), eventId]
     ).catch(() => {});
+
+    if (isBusinessRule) {
+      webhookEventsCounter.inc({ event_type: eventType || 'payment', status: 'ignored' });
+      logger.warn(
+        'Webhook %s could not be applied to booking %s: %s. Manual reconciliation may be needed.',
+        eventId, bookingId, err.message
+      );
+      return res.status(200).json({
+        success: true,
+        applied: false,
+        message: err.message,
+        bookingId
+      });
+    }
 
     webhookEventsCounter.inc({ event_type: eventType || 'payment', status: 'error' });
     logger.error('Webhook %s failed: %s', eventId, err.message);

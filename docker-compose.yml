@@ -64,8 +64,10 @@ services:
   # 5. Node.js Backend API
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      # Repo root, so the image can include MovieBookingSystem/*.sql — the
+      # migration runner needs them and they live outside ./backend.
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: cinewave_backend
     restart: unless-stopped
     depends_on:

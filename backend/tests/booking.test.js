@@ -128,11 +128,11 @@ describe('Booking flow', () => {
     // Writing straight to booking_seats simulates a bug or a second process
     // getting past every application-level guard. uq_seat_occupancy is the
     // last line of defence and must still refuse.
-    const [booking] = await db.query(
+    const booking = await db.query(
       `INSERT INTO bookings (booking_ref, user_id, show_id, total_amount, status)
        VALUES (CONCAT('TST-', SUBSTRING(MD5(RAND()), 1, 12)), ?, ?, 1, 'Pending')`,
       [bob.userId, fixture.showId]
-    ).then((r) => [r]);
+    );
 
     await expect(
       db.query(
