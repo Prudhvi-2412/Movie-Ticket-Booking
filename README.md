@@ -118,15 +118,16 @@ Redis or Kafka you already run. Override any of them in `.env`.
           │ system of     │  │ seat   │  │ booking       │
           │ record ·      │  │ locks  │  │ events →      │
           │ procedures ·  │  │ + TTL  │  │ notifications │
-          │ triggers ·    │  │ + cache│  │ email ·       │
+          │ triggers ·    │  │ + cache│  │ analytics     │
           │ views         │  │        │  │ analytics     │
           └───────────────┘  └────────┘  └───────────────┘
 ```
 
 **Each store has one job.** MySQL is the system of record and the final
 arbiter of who holds a seat. Redis holds the short-lived exclusive claim while
-a customer checks out. Kafka carries after-the-fact events — notifications,
-email, analytics — that must never block a booking.
+a customer checks out. Booking procedures write events to a MySQL outbox in
+the same transaction. A dispatcher publishes them to Kafka, where separate
+consumers save customer notifications and update occupancy-based pricing.
 
 ### Repository layout
 
@@ -151,7 +152,7 @@ frontend/
     pages/         customer pages + pages/admin/
 
 MovieBookingSystem/
-  Schema/          tables.sql
+  Schema/          tables.sql · refund_columns.sql · kafka_delivery.sql
   Logic/           procedures.sql · triggers.sql · functions.sql
   Analytics/       views.sql · reports.sql · advanced_analytics.sql
   Automation/      background_tasks.sql
@@ -162,7 +163,7 @@ MovieBookingSystem/
 
 ## Database
 
-`npm run db:migrate` applies the SQL in a fixed order (tables → views →
+`npm run db:migrate` applies the SQL in a fixed order (tables and upgrades → views →
 functions → procedures → triggers → events) and records each file with a
 checksum in `schema_migrations`. Every file is idempotent, so re-running is
 safe.
@@ -180,7 +181,8 @@ users ────────────────────────�
 ```
 
 Plus `webhook_logs` (payment idempotency ledger), `audit_logs`, `booking_logs`,
-`seat_booking_logs` and `schema_migrations`.
+`seat_booking_logs`, `schema_migrations`, `outbox_events`, `consumed_events`,
+and `notifications`.
 
 ### The double-booking guarantee
 
@@ -208,7 +210,7 @@ exactly one definition of what each transition means:
 | `CreateBooking` | Validates the show and seats, prices the order, inserts booking + seats atomically |
 | `ConfirmBookingPayment` | Locks the booking row, records the payment, moves it to Confirmed. Idempotent |
 | `FailBookingPayment` | Records the failure and releases the seats |
-| `CancelBooking` | Releases seats, refunds successful payments, sets the terminal status |
+| `CancelBooking` | Releases seats and records a pending refund for paid bookings |
 | `ExpireStaleBookings` | Reclaims abandoned holds, returning the freed seats to the caller |
 | `UpdateDynamicPrice` | Sets a clamped demand multiplier from occupancy |
 | `GetAvailableSeats` | Free seats for a show |
@@ -254,7 +256,7 @@ reads from these.
   │ 8. Claim the event id (unique index)        │
   │ 9. CALL ConfirmBookingPayment(...)          │
   │ 10. Release the now-redundant Redis holds   │
-  │ 11. Emit BookingConfirmed → Kafka           │
+  │ 11. Commit BookingConfirmed to outbox       │
   └─────────────────────────────────────────────┘
        ▼
   CONFIRMED  →  digital ticket
@@ -263,12 +265,11 @@ reads from these.
 **Booking states**
 
 ```
-Pending ──▶ PaymentProcessing ──▶ Confirmed ──▶ Refunded
-   │                │                 │
-   │                └──▶ PaymentFailed │  (seats released)
-   │                                   │
-   ├──▶ Expired      (hold lapsed)     └──▶ Cancelled
-   └──▶ Cancelled
+Pending ──▶ PaymentProcessing ──▶ Confirmed ──▶ Cancelled ──▶ Refunded
+   │                │                 │           (refund pending)
+   │                └──▶ PaymentFailed │           (gateway confirms)
+   ├──▶ Expired      (hold lapsed)     │
+   └──▶ Cancelled                      │
 ```
 
 ### Redis seat locking
@@ -383,12 +384,29 @@ The webhook endpoint guarantees three things:
 
 ### Kafka
 
-Events (`BookingCreated`, `PaymentSuccessful`, `BookingConfirmed`,
-`BookingCancelled`, `SeatReleased`) are published to `booking-events` and
-consumed by notification, email and analytics handlers. These are strictly
-after-the-fact concerns — nothing on the booking path waits for them. If the
-broker is unavailable the producer falls back to an in-process event bus so the
-consumers still run.
+`CreateBooking`, `ConfirmBookingPayment`, and `CancelBooking` write an outbox
+event in the same MySQL transaction as the state change. The separate
+`outbox-dispatcher` claims rows and publishes to `booking-events`; broker
+failures leave the row for retry. `kafka-worker` runs independent notification
+and analytics consumer groups. The notification consumer saves an in-app
+message, available through `GET /api/notifications`; the analytics consumer
+updates the show's demand multiplier after confirmation or cancellation.
+Both record consumed event IDs in the same transaction as their effect, so
+Kafka redelivery cannot duplicate it. After three handler attempts, a failed
+event goes to `booking-events-dead-letter` with the original payload and error;
+if that publish fails, Kafka retains the original offset. Notifications are
+visible at `/notifications` in the React app. There is no email delivery.
+
+Docker Compose starts both workers. For a local Node setup, run
+`npm run worker:outbox` and `npm run worker:kafka` in separate terminals after
+the migration and broker are ready. Inspect failed deliveries with:
+
+```bash
+docker compose exec kafka kafka-console-consumer --bootstrap-server kafka:9092 --topic booking-events-dead-letter --from-beginning
+```
+
+A corrected event can be republished to `booking-events`; the consumer ledger
+makes replay safe.
 
 ---
 
@@ -535,7 +553,7 @@ docker compose up -d mysql redis
 cd backend && npm run db:setup && npm test
 ```
 
-47 tests across four files:
+55 tests across five files:
 
 - **`auth.test.js`** — registration, privilege-escalation attempts, password
   rules, timing-equal login failures, token refresh and rotation, RBAC.
@@ -547,11 +565,14 @@ cd backend && npm run db:setup && npm test
 - **`webhook.test.js`** — unsigned/forged/tampered signatures, replayed event
   ids, retries under a new event id, failure releasing seats, cancelled
   bookings not being resurrected.
+- **`notifications.test.js`** — transactional event creation, idempotent
+  notification and analytics consumption, customer ownership, read status.
 
 ### End-to-end verification
 
 `npm run verify` walks the entire acceptance scenario over HTTP against a
-running server — admin creates a city, theatre, screen, seat map, movie and
+running server with the Kafka worker and outbox dispatcher — admin creates a
+city, theatre, screen, seat map, movie and
 show; a customer discovers it, holds seats, pays and receives a ticket — while
 asserting the concurrency, authorisation and idempotency guarantees. It cleans
 up the fixtures it creates.
@@ -704,7 +725,7 @@ screens, seat layouts, movies and shows, a visual seat-layout generator,
 per-show pricing, booking and user management, analytics, and operational
 views over the webhook and audit ledgers.
 
-**Platform** — migration runner, JS seed, 47 integration tests, 72-check
+**Platform** — migration runner, JS seed, 55 integration tests, 80-check
 end-to-end verification, ESLint config, graceful shutdown, dependency-aware
 health checks, hardened Dockerfiles, `.dockerignore`, and a CI pipeline that
 provisions datastores and runs the whole thing.
@@ -723,13 +744,14 @@ provisions datastores and runs the whole thing.
   amount-checked, so it is safe — but the asynchronous source of truth is
   absent, and a customer who closes the tab mid-payment would rely on the
   hold expiring rather than on Razorpay telling us what happened.
-- **Refunds are ledger-only.** Cancelling marks payments `Refunded` in the
-  database without calling Razorpay's refund API.
-- **Email and SMS are logged, not sent.** The Kafka consumers write what they
-  would have dispatched. Wiring a provider means editing one consumer.
-- **Kafka consumers read from an in-process bus**, not from Kafka topics. The
-  producer publishes to Kafka; consuming from it across replicas would need a
-  consumer group per service.
+- **Refunds need a live gateway to move money.** The simulator processes test
+  refunds locally. With Razorpay credentials, cancellation requests a refund
+  from Razorpay and keeps it pending until the gateway reports it processed.
+- **Notifications are in-app only.** There is no email or SMS provider.
+- **Kafka delivery is at least once.** A crash after broker acceptance but
+  before the outbox row is marked published can resend an event. Consumers
+  deduplicate by event ID. Inspect `booking-events-dead-letter` for events
+  that exhausted handler retries and replay them after correcting the cause.
 - **Refresh tokens are stored one-per-user**, so signing in on a second device
   ends the session on the first.
 - **Seat-hold recovery is per-tab.** The hold lives in `sessionStorage`, so
@@ -740,6 +762,4 @@ provisions datastores and runs the whole thing.
   backend instances would not see each other's holds. The database's unique
   index still prevents double booking, but customers would meet more conflicts
   at checkout.
-- **No coupons or refund gateway calls.** `discount_amount` exists on bookings
-  and is always zero; cancellation marks payments `Refunded` in the ledger
-  without calling out to a provider.
+- **No coupons.** `discount_amount` exists on bookings and is always zero.

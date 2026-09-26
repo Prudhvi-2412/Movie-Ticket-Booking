@@ -1,18 +1,39 @@
-const { subscribeEvent } = require('../../config/kafka');
-const logger = require('../../utils/logger');
+const db = require('../../config/db');
 
-const initNotificationConsumer = () => {
-  subscribeEvent('booking-events', (event) => {
-    const { eventType, data } = event;
+const GROUP = 'cinewave-notifications';
 
-    if (eventType === 'BookingConfirmed') {
-      logger.info(' [Notification Service] Sending instant SMS & App Push notification for Booking #%s to User ID %s', data.bookingId, data.userId);
-    } else if (eventType === 'BookingCancelled') {
-      logger.info(' [Notification Service] Sending cancellation & refund notification for Booking #%s to User ID %s', data.bookingId, data.userId);
-    }
-  });
+const handleNotificationEvent = async (event) => {
+  if (!['BookingConfirmed', 'BookingCancelled'].includes(event.eventType)) return;
+  const { bookingId, bookingRef, userId, refundPending } = event.data;
+  if (!bookingId || !bookingRef || !userId) throw new Error('Booking notification lacks its owner or reference');
 
-  logger.info('Notification Consumer initialized.');
+  const confirmed = event.eventType === 'BookingConfirmed';
+  const title = confirmed ? 'Booking confirmed' : 'Booking cancelled';
+  const message = confirmed
+    ? `Your booking ${bookingRef} is confirmed. Your ticket is ready.`
+    : refundPending
+      ? `Booking ${bookingRef} was cancelled. Your refund has been requested.`
+      : `Booking ${bookingRef} was cancelled.`;
+
+  const connection = await db.getConnection();
+  try {
+    await connection.beginTransaction();
+    await connection.query(
+      'INSERT INTO consumed_events (consumer_group, event_id) VALUES (?, ?)',
+      [GROUP, event.eventId]
+    );
+    await connection.query(
+      `INSERT INTO notifications (user_id, booking_id, event_id, title, message)
+       VALUES (?, ?, ?, ?, ?)`,
+      [userId, bookingId, event.eventId, title, message]
+    );
+    await connection.commit();
+  } catch (err) {
+    await connection.rollback();
+    if (err.code !== 'ER_DUP_ENTRY') throw err;
+  } finally {
+    connection.release();
+  }
 };
 
-module.exports = { initNotificationConsumer };
+module.exports = { GROUP, handleNotificationEvent };

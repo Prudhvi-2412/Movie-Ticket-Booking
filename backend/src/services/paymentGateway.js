@@ -125,6 +125,21 @@ const fetchPayment = async (paymentId) => {
   return client.payments.fetch(paymentId);
 };
 
+const refundPayment = async (paymentId, amount, bookingRef) => {
+  if (!isLive) {
+    return {
+      id: `rfnd_sim_${crypto.randomBytes(8).toString('hex')}`,
+      payment_id: paymentId,
+      amount: toPaise(amount),
+      status: 'processed'
+    };
+  }
+  return client.payments.refund(paymentId, {
+    amount: toPaise(amount),
+    receipt: String(bookingRef).slice(0, 40)
+  });
+};
+
 /**
  * Normalises a webhook body into the shape the handler works with.
  *
@@ -135,9 +150,22 @@ const fetchPayment = async (paymentId) => {
 const parseWebhookEvent = (body) => {
   // --- Razorpay ---------------------------------------------------
   if (body.event && body.payload) {
+    if (body.event.startsWith('refund.')) {
+      const refund = body.payload.refund?.entity || {};
+      return {
+        eventId: `rzp_${body.event}_${refund.id}`,
+        eventType: body.event,
+        data: {
+          paymentId: refund.payment_id,
+          refundId: refund.id,
+          amount: refund.amount != null ? toRupees(refund.amount) : null,
+          status: refund.status
+        }
+      };
+    }
     const entity = body.payload.payment?.entity || body.payload.order?.entity || {};
     const notes = entity.notes || {};
-    const captured = ['payment.captured', 'order.paid'].includes(body.event);
+    const captured = body.event === 'payment.captured';
 
     return {
       // Razorpay has no per-delivery event id in the body; the payment id plus
@@ -217,6 +245,7 @@ module.exports = {
   verifyWebhookSignature,
   parseWebhookEvent,
   fetchPayment,
+  refundPayment,
   toPaise,
   toRupees,
   // simulator

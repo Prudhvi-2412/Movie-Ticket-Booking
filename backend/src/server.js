@@ -3,10 +3,6 @@ const config = require('./config/env');
 const logger = require('./utils/logger');
 const db = require('./config/db');
 const redis = require('./config/redis');
-const { initKafkaProducer, shutdownKafka } = require('./config/kafka');
-const { initNotificationConsumer } = require('./kafka/consumers/notificationConsumer');
-const { initAnalyticsConsumer } = require('./kafka/consumers/analyticsConsumer');
-const { initEmailConsumer } = require('./kafka/consumers/emailConsumer');
 const { startSeatCleanupWorker } = require('./workers/seatCleanupWorker');
 const { startRevenueReportWorker } = require('./workers/revenueReportWorker');
 
@@ -22,11 +18,6 @@ const startServer = async () => {
     await migrate();
     await seed();
   }
-
-  await initKafkaProducer();
-  initNotificationConsumer();
-  initAnalyticsConsumer();
-  initEmailConsumer();
 
   workers.push(startSeatCleanupWorker(), startRevenueReportWorker());
 
@@ -54,7 +45,6 @@ const shutdown = async (signal) => {
   try {
     if (server) await new Promise((resolve) => server.close(resolve));
     workers.forEach((task) => task && task.stop && task.stop());
-    await shutdownKafka();
     await redis.quit();
     await db.pool.end();
     logger.info('Shutdown complete.');

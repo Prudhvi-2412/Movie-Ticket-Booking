@@ -110,6 +110,15 @@ describe('Booking flow', () => {
     expect(Number(row.total_amount)).toBeCloseTo(expected, 2);
   });
 
+  it('rejects a mismatched payment amount inside the database procedure', async () => {
+    await expect(db.query(
+      'CALL ConfirmBookingPayment(?, ?, ?, ?, ?, ?)',
+      [bookingId, 'UPI', `txn_wrong_${Date.now()}`, `idem_wrong_${Date.now()}`, null, 1]
+    )).rejects.toMatchObject({ sqlState: '45000' });
+    const [booking] = await db.query('SELECT status FROM bookings WHERE booking_id = ?', [bookingId]);
+    expect(booking.status).toBe('Pending');
+  });
+
   it('rejects a seat that does not belong to the show', async () => {
     const res = await authed('post', '/api/bookings/lock-seats', bob.token)
       .send({ showId: fixture.showId, seatIds: [999_999] });
@@ -170,5 +179,35 @@ describe('Booking flow', () => {
     const rebook = await authed('post', '/api/bookings/lock-seats', bob.token)
       .send({ showId: fixture.showId, seatIds: [seatAt(0).seat_id] });
     expect(rebook.status).toBe(200);
+  });
+
+  it('returns the correct booking id and reference under concurrent creation', async () => {
+    const seatIds = fixture.seatMap.slice(2, 6).map((seat) => seat.seat_id);
+    await Promise.all(seatIds.map(async (seatId) => {
+      const hold = await authed('post', '/api/bookings/lock-seats', alice.token)
+        .send({ showId: fixture.showId, seatIds: [seatId] });
+      expect(hold.status).toBe(200);
+    }));
+
+    const results = await Promise.all(seatIds.map((seatId) =>
+      authed('post', '/api/bookings', alice.token)
+        .send({ showId: fixture.showId, seatIds: [seatId] })
+    ));
+
+    expect(results.every((result) => result.status === 201)).toBe(true);
+    const ids = results.map((result) => result.body.booking.bookingId);
+    expect(new Set(ids).size).toBe(seatIds.length);
+
+    const rows = await db.query(
+      `SELECT b.booking_id, b.booking_ref, bs.seat_id
+         FROM bookings b JOIN booking_seats bs ON bs.booking_id = b.booking_id
+        WHERE b.booking_id IN (${ids.map(() => '?').join(',')})`, ids
+    );
+    expect(rows).toHaveLength(seatIds.length);
+    results.forEach((result, index) => {
+      const row = rows.find((candidate) => candidate.booking_id === result.body.booking.bookingId);
+      expect(row.booking_ref).toBe(result.body.booking.bookingRef);
+      expect(row.seat_id).toBe(seatIds[index]);
+    });
   });
 });

@@ -1,86 +1,99 @@
 const { Kafka, Partitioners } = require('kafkajs');
-const EventEmitter = require('events');
 const config = require('./env');
 const logger = require('../utils/logger');
 
-const localBus = new EventEmitter();
-let kafkaProducer = null;
-let isKafkaConnected = false;
-
+const TOPIC = 'booking-events';
+const DEAD_LETTER_TOPIC = 'booking-events-dead-letter';
 const kafka = new Kafka({
   clientId: config.KAFKA_CLIENT_ID,
   brokers: config.KAFKA_BROKERS,
-  retry: {
-    initialRetryTime: 300,
-    retries: 3
-  }
+  retry: { initialRetryTime: 300, retries: 3 }
 });
+const producer = kafka.producer({ createPartitioner: Partitioners.DefaultPartitioner });
+const consumers = [];
+let producerConnected = false;
 
-const producer = kafka.producer({
-  createPartitioner: Partitioners.DefaultPartitioner
-});
+const connectProducer = async () => {
+  if (producerConnected) return;
+  await producer.connect();
+  producerConnected = true;
+};
 
-const initKafkaProducer = async () => {
+// Only the outbox dispatcher calls this for business events. Broker errors
+// propagate, leaving the durable row available for a later attempt.
+const sendEvent = async (event) => {
+  await connectProducer();
+  await producer.send({
+    topic: TOPIC,
+    messages: [{ key: String(event.data.bookingId), value: JSON.stringify(event) }]
+  });
+};
+
+const ensureTopics = async () => {
+  const admin = kafka.admin();
+  await admin.connect();
   try {
-    await producer.connect();
-    isKafkaConnected = true;
-    kafkaProducer = producer;
-    logger.info('Kafka Producer connected to brokers: %s', config.KAFKA_BROKERS.join(', '));
-  } catch (error) {
-    logger.warn('Kafka connection unavailable (%s). Falling back to in-memory event bus.', error.message);
-    isKafkaConnected = false;
+    await admin.createTopics({
+      topics: [TOPIC, DEAD_LETTER_TOPIC].map((topic) => ({
+        topic, numPartitions: 1, replicationFactor: 1
+      })),
+      waitForLeaders: true
+    });
+  } finally {
+    await admin.disconnect();
   }
 };
 
-const publishEvent = async (topic, event) => {
-  const payload = {
-    eventId: event.eventId || `evt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-    eventType: event.eventType,
-    timestamp: new Date().toISOString(),
-    data: event.data
-  };
-
-  // Log the envelope, not the body: event data carries user ids and amounts,
-  // and %j of the whole payload put that in every log line.
-  logger.info('Event published [%s] %s (%s)', topic, payload.eventType, payload.eventId);
-  logger.debug('Event payload %s: %j', payload.eventId, payload.data);
-
-  // Always emit on local bus for consumers
-  localBus.emit(topic, payload);
-  localBus.emit('all_events', { topic, payload });
-
-  if (isKafkaConnected && kafkaProducer) {
-    try {
-      await kafkaProducer.send({
-        topic,
-        messages: [{ value: JSON.stringify(payload) }]
-      });
-    } catch (err) {
-      logger.error('Failed to send event to Kafka topic %s: %s', topic, err.message);
-    }
+const startKafkaConsumer = async (groupId, handler) => {
+  const consumer = kafka.consumer({ groupId });
+  await consumer.connect();
+  try {
+    await consumer.subscribe({ topic: TOPIC, fromBeginning: true });
+    await consumer.run({
+      eachMessage: async ({ message }) => {
+        const raw = message.value?.toString('utf8') || '';
+        let event;
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          try {
+            event = JSON.parse(raw);
+            if (!event.eventId || !event.eventType || !event.data) {
+              throw new Error('Invalid booking event envelope');
+            }
+            await handler(event);
+            return;
+          } catch (err) {
+            logger.error('Kafka %s attempt %d failed: %s', groupId, attempt, err.message);
+            if (attempt < 3) {
+              await new Promise((resolve) => setTimeout(resolve, 200 * (2 ** (attempt - 1))));
+              continue;
+            }
+            // A failed DLQ send throws, so Kafka retains the source offset.
+            await connectProducer();
+            await producer.send({
+              topic: DEAD_LETTER_TOPIC,
+              messages: [{ key: event?.eventId || groupId, value: JSON.stringify({
+                consumerGroup: groupId, original: raw, error: err.message,
+                failedAt: new Date().toISOString()
+              }) }]
+            });
+            logger.error('Kafka %s moved event %s to dead-letter topic', groupId, event?.eventId);
+          }
+        }
+      }
+    });
+    consumers.push(consumer);
+    logger.info('Kafka consumer %s subscribed to %s', groupId, TOPIC);
+  } catch (err) {
+    await consumer.disconnect();
+    throw err;
   }
 };
 
 const shutdownKafka = async () => {
-  if (isKafkaConnected && kafkaProducer) {
-    try {
-      await kafkaProducer.disconnect();
-      logger.info('Kafka producer disconnected.');
-    } catch (err) {
-      logger.warn('Error disconnecting Kafka producer: %s', err.message);
-    }
-  }
-  isKafkaConnected = false;
-  localBus.removeAllListeners();
+  await Promise.allSettled(consumers.splice(0).map((consumer) => consumer.disconnect()));
+  if (producerConnected) await producer.disconnect();
+  producerConnected = false;
 };
 
-module.exports = {
-  kafka,
-  initKafkaProducer,
-  publishEvent,
-  subscribeEvent: (topic, handler) => {
-    localBus.on(topic, handler);
-  },
-  isKafkaConnected: () => isKafkaConnected,
-  shutdownKafka
-};
+module.exports = { TOPIC, DEAD_LETTER_TOPIC, connectProducer, sendEvent,
+  ensureTopics, startKafkaConsumer, shutdownKafka };

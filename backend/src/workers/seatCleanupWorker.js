@@ -2,7 +2,6 @@ const cron = require('node-cron');
 const db = require('../config/db');
 const logger = require('../utils/logger');
 const { releaseSeatLocks } = require('../redis/seatLock');
-const { emitSeatReleased } = require('../kafka/producer');
 const { bookingCounter } = require('../utils/metrics');
 
 /**
@@ -16,7 +15,7 @@ const { bookingCounter } = require('../utils/metrics');
  *
  * ExpireStaleBookings does the relational half atomically and returns the
  * freed seats; this worker then drops any Redis keys still lingering and
- * emits the release events.
+ * releases the matching Redis holds.
  */
 const runOnce = async () => {
   const [rows] = await db.pool.query('CALL ExpireStaleBookings()');
@@ -33,7 +32,6 @@ const runOnce = async () => {
 
   for (const [showId, seatIds] of byShow.entries()) {
     await releaseSeatLocks(showId, seatIds);
-    await emitSeatReleased({ showId, seatIds, reason: 'HOLD_EXPIRED' });
   }
 
   const bookingIds = new Set(freed.map((r) => r.booking_id));

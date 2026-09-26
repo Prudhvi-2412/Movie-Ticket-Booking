@@ -6,6 +6,8 @@ const {
 const db = require('../src/config/db');
 const config = require('../src/config/env');
 const { getShowLockedSeatsMap } = require('../src/redis/seatLock');
+const gateway = require('../src/services/paymentGateway');
+const paymentIntents = new Map();
 
 /** Signs a body exactly as the gateway would, over the raw bytes. */
 const sign = (rawBody) =>
@@ -27,10 +29,10 @@ const makeEvent = (bookingId, overrides = {}) => ({
   createdAt: new Date().toISOString(),
   data: {
     bookingId,
-    orderId: `order_${unique()}`,
+    orderId: paymentIntents.get(bookingId)?.orderId || `order_${unique()}`,
     transactionId: `txn_${unique()}`,
-    idempotencyKey: `idem_${unique()}`,
-    amount: null,
+    idempotencyKey: paymentIntents.get(bookingId)?.idempotencyKey || `idem_${unique()}`,
+    amount: paymentIntents.get(bookingId)?.amount ?? null,
     currency: 'INR',
     paymentMethod: 'UPI',
     status: 'SUCCESS',
@@ -84,7 +86,16 @@ describe('Payment webhook', () => {
     const booking = await authed('post', '/api/bookings', customer.token)
       .send({ showId: fixture.showId, seatIds });
     expect(booking.status).toBe(201);
-    return { bookingId: booking.body.booking.bookingId, seatIds };
+    const bookingId = booking.body.booking.bookingId;
+    const initiated = await authed('post', '/api/payments/initiate', customer.token)
+      .send({ bookingId });
+    expect(initiated.status).toBe(200);
+    paymentIntents.set(bookingId, {
+      orderId: initiated.body.checkoutSession.orderId,
+      idempotencyKey: `idem_${initiated.body.checkoutSession.orderId}`,
+      amount: initiated.body.checkoutSession.amount
+    });
+    return { bookingId, seatIds };
   };
 
   it('rejects an unsigned webhook', async () => {
@@ -116,6 +127,27 @@ describe('Payment webhook', () => {
     const res = await postWebhook(event, { signature });
 
     expect(res.status).toBe(401);
+  });
+
+  it('does not confirm when a signed payment has the wrong order or amount', async () => {
+    const { bookingId } = await newPendingBooking();
+    const wrongOrder = await postWebhook(makeEvent(bookingId, { orderId: `order_${unique()}` }));
+    const wrongAmount = await postWebhook(makeEvent(bookingId, { amount: 1 }));
+
+    expect(wrongOrder.body.applied).toBe(false);
+    expect(wrongAmount.body.applied).toBe(false);
+    const [booking] = await db.query('SELECT status FROM bookings WHERE booking_id = ?', [bookingId]);
+    expect(booking.status).not.toBe('Confirmed');
+  });
+
+  it('ignores authorization events instead of treating them as failed payments', async () => {
+    const { bookingId } = await newPendingBooking();
+    const event = makeEvent(bookingId);
+    event.eventType = 'payment.authorized';
+    const response = await postWebhook(event);
+    expect(response.body.applied).toBe(false);
+    const [booking] = await db.query('SELECT status FROM bookings WHERE booking_id = ?', [bookingId]);
+    expect(booking.status).toBe('PaymentProcessing');
   });
 
   it('confirms a booking on a validly signed capture event', async () => {
@@ -181,6 +213,63 @@ describe('Payment webhook', () => {
       [bookingId]
     );
     expect(Number(seatRows[0].count)).toBe(1);
+  });
+
+  it('keeps a paid cancellation pending until its signed refund webhook arrives', async () => {
+    const { bookingId } = await newPendingBooking();
+    expect((await postWebhook(makeEvent(bookingId))).status).toBe(200);
+    const [payment] = await db.query(
+      "SELECT transaction_id, amount FROM payments WHERE booking_id = ? AND payment_status = 'Success'",
+      [bookingId]
+    );
+    const refundId = `rfnd_${unique()}`;
+    const refundStub = jest.spyOn(gateway, 'refundPayment').mockResolvedValue({
+      id: refundId, payment_id: payment.transaction_id,
+      amount: gateway.toPaise(payment.amount), status: 'pending'
+    });
+    try {
+      const cancelled = await authed('post', `/api/bookings/${bookingId}/cancel`, customer.token);
+      expect(cancelled.status).toBe(200);
+      expect(cancelled.body.status).toBe('Cancelled');
+      expect(cancelled.body.refundStatus).toBe('Processing');
+
+      const refundEvent = {
+        event: 'refund.processed',
+        payload: { refund: { entity: {
+          id: refundId, payment_id: payment.transaction_id,
+          amount: gateway.toPaise(payment.amount), status: 'processed'
+        } } }
+      };
+      const processed = await postWebhook(refundEvent);
+      expect(processed.status).toBe(200);
+      expect(processed.body.applied).toBe(true);
+      const [booking] = await db.query('SELECT status FROM bookings WHERE booking_id = ?', [bookingId]);
+      expect(booking.status).toBe('Refunded');
+      const replay = await postWebhook(refundEvent);
+      expect(replay.body.duplicate).toBe(true);
+    } finally {
+      refundStub.mockRestore();
+    }
+  });
+
+  it('does not claim a refund succeeded when the gateway rejects the request', async () => {
+    const { bookingId } = await newPendingBooking();
+    expect((await postWebhook(makeEvent(bookingId))).status).toBe(200);
+    const refundStub = jest.spyOn(gateway, 'refundPayment')
+      .mockRejectedValue(new Error('Gateway unavailable'));
+    try {
+      const cancelled = await authed('post', `/api/bookings/${bookingId}/cancel`, customer.token);
+      expect(cancelled.status).toBe(200);
+      expect(cancelled.body.status).toBe('Cancelled');
+      expect(cancelled.body.refundStatus).toBe('Failed');
+      const [payment] = await db.query(
+        'SELECT payment_status, refund_status FROM payments WHERE booking_id = ?', [bookingId]
+      );
+      expect(payment.payment_status).toBe('Success');
+      expect(payment.refund_status).toBe('Failed');
+    } finally {
+      refundStub.mockRestore();
+    }
   });
 
   it('releases the seats when payment fails', async () => {

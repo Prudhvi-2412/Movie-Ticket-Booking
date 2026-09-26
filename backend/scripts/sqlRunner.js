@@ -21,6 +21,8 @@ const SQL_ROOT = process.env.SQL_ROOT
  */
 const MIGRATION_FILES = [
   'Schema/tables.sql',
+  'Schema/refund_columns.sql',
+  'Schema/kafka_delivery.sql',
   'Analytics/views.sql',
   'Logic/functions.sql',
   'Logic/procedures.sql',

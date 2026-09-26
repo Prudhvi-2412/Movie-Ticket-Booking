@@ -1,6 +1,5 @@
 const db = require('../config/db');
 const { releaseSeatLocks } = require('../redis/seatLock');
-const { emitPaymentSuccessful, emitBookingConfirmed, emitSeatReleased } = require('../kafka/producer');
 const logger = require('../utils/logger');
 const { bookingCounter } = require('../utils/metrics');
 
@@ -9,12 +8,11 @@ const { bookingCounter } = require('../utils/metrics');
  *
  * Two routes reach confirmation — the Razorpay Checkout callback (fast, for
  * the customer's benefit) and the Razorpay webhook (authoritative, may arrive
- * either side of it). Both must release the now-redundant Redis holds and emit
- * the same events, so that work lives here once instead of being duplicated
- * and drifting between the two.
+ * either side of it). Both must release the now-redundant Redis holds. The
+ * booking procedure writes one event to the outbox inside its transaction.
  *
  * Safe to run more than once: releasing an already-released lock is a no-op,
- * and the consumers are idempotent.
+ * and the stored procedure emits only on the first confirmation.
  */
 
 const activeSeatIds = async (bookingId) => {
@@ -36,22 +34,6 @@ const settleConfirmedBooking = async (bookingId, booking, payment = {}) => {
 
   bookingCounter.inc({ status: 'confirmed' });
 
-  await emitPaymentSuccessful({
-    bookingId: Number(bookingId),
-    transactionId: payment.transactionId,
-    amount: payment.amount ?? booking.total_amount,
-    paymentMethod: payment.paymentMethod
-  });
-
-  await emitBookingConfirmed({
-    bookingId: Number(bookingId),
-    bookingRef: booking.booking_ref,
-    userId: booking.user_id,
-    showId: booking.show_id,
-    seatIds,
-    totalAmount: booking.total_amount
-  });
-
   logger.info('Booking %s confirmed', booking.booking_ref);
 };
 
@@ -66,7 +48,6 @@ const settleConfirmedBooking = async (bookingId, booking, payment = {}) => {
 const settleFailedBooking = async (bookingId, booking, seatIds) => {
   if (seatIds.length) {
     await releaseSeatLocks(booking.show_id, seatIds);
-    await emitSeatReleased({ showId: booking.show_id, seatIds, reason: 'PAYMENT_FAILED' });
   }
 
   bookingCounter.inc({ status: 'payment_failed' });

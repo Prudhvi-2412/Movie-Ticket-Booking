@@ -46,7 +46,7 @@ const section = (title) => console.log(`\n${c.bold(title)}`);
  * environment. It is not a bypass: the request goes through the public
  * webhook endpoint and every check it applies.
  */
-const deliverRazorpayWebhook = async ({ bookingId, orderId, bookingRef, captured = true, paymentId }) => {
+const deliverRazorpayWebhook = async ({ bookingId, orderId, bookingRef, amountInPaise, captured = true, paymentId }) => {
   const config = require('../src/config/env');
   const secret = config.RAZORPAY_WEBHOOK_SECRET || config.WEBHOOK_SECRET;
 
@@ -60,10 +60,10 @@ const deliverRazorpayWebhook = async ({ bookingId, orderId, bookingRef, captured
           entity: 'payment',
           order_id: orderId,
           status: captured ? 'captured' : 'failed',
+          amount: amountInPaise,
           method: 'upi',
           currency: 'INR',
-          // Razorpay echoes back the notes set at order creation — that is how
-          // the handler maps a payment to a booking.
+          // The handler resolves the booking through the stored order intent.
           notes: { bookingId: String(bookingId), bookingRef: String(bookingRef || '') },
           error_description: captured ? null : 'Simulated decline'
         }
@@ -395,6 +395,7 @@ const run = async () => {
   check('webhook with NO signature is rejected (401)', unsigned.status === 401, `got ${unsigned.status}`);
 
   const orderId = initiate.body?.checkoutSession?.orderId;
+  const amountInPaise = initiate.body?.checkoutSession?.amountInPaise;
 
   /*
    * The Checkout callback endpoint.
@@ -447,7 +448,7 @@ const run = async () => {
   let pay;
 
   if (provider === 'razorpay') {
-    pay = await deliverRazorpayWebhook({ bookingId, orderId, bookingRef });
+    pay = await deliverRazorpayWebhook({ bookingId, orderId, bookingRef, amountInPaise });
     check('payment confirms the booking (via signed Razorpay webhook)',
       pay.status === 200, JSON.stringify(pay.body));
   } else {
@@ -462,13 +463,30 @@ const run = async () => {
   check('booking reaches Confirmed', bookingAfterPay.body?.booking?.status === 'Confirmed',
     bookingAfterPay.body?.booking?.status);
 
+  let deliveredNotification;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    // Outbox publishing and Kafka delivery are asynchronous.
+    // eslint-disable-next-line no-await-in-loop
+    const response = await call('GET', '/api/notifications', { token: tokenA });
+    deliveredNotification = response.body?.notifications?.find((item) =>
+      item.booking_id === bookingId && item.title === 'Booking confirmed');
+    if (deliveredNotification) break;
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  check('Kafka delivers a persisted booking notification', !!deliveredNotification);
+
   const payAgain = provider === 'razorpay'
-    ? await deliverRazorpayWebhook({ bookingId, orderId, bookingRef })
+    ? await deliverRazorpayWebhook({ bookingId, orderId, bookingRef, amountInPaise })
     : await call('POST', '/api/payments/confirm', {
       token: tokenA, body: { bookingId, paymentMethod: 'UPI', outcome: 'success' }
     });
   check('paying twice is a harmless no-op', payAgain.status === 200,
     JSON.stringify(payAgain.body));
+  const notificationsAfterReplay = await call('GET', '/api/notifications', { token: tokenA });
+  check('payment replay creates no duplicate notification',
+    notificationsAfterReplay.body?.notifications?.filter((item) =>
+      item.booking_id === bookingId && item.title === 'Booking confirmed').length === 1);
 
   const payments = await call('GET', `/api/payments/booking/${bookingId}`, { token: tokenA });
   const successful = payments.body?.payments?.filter((p) => p.payment_status === 'Success') || [];

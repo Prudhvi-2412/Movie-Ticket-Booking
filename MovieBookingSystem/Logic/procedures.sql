@@ -130,6 +130,12 @@ proc: BEGIN
              price   DECIMAL(10,2) PATH '$.price'
          )) AS jt;
 
+    INSERT INTO outbox_events (event_id, event_type, aggregate_id, payload)
+    VALUES (UUID(), 'BookingCreated', p_booking_id,
+            JSON_OBJECT('bookingId', p_booking_id, 'bookingRef', p_booking_ref,
+                        'userId', p_user_id, 'showId', p_show_id,
+                        'totalAmount', v_total));
+
     COMMIT;
 END //
 
@@ -151,6 +157,9 @@ proc: BEGIN
     DECLARE v_status     VARCHAR(30);
     DECLARE v_expires_at DATETIME;
     DECLARE v_amount     DECIMAL(10,2);
+    DECLARE v_user_id    INT;
+    DECLARE v_show_id    INT;
+    DECLARE v_booking_ref VARCHAR(24);
 
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
@@ -160,14 +169,19 @@ proc: BEGIN
 
     START TRANSACTION;
 
-    SELECT status, expires_at, total_amount
-      INTO v_status, v_expires_at, v_amount
+    SELECT status, expires_at, total_amount, user_id, show_id, booking_ref
+      INTO v_status, v_expires_at, v_amount, v_user_id, v_show_id, v_booking_ref
     FROM bookings
     WHERE booking_id = p_booking_id
     FOR UPDATE;
 
     IF v_status IS NULL THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Booking not found.';
+    END IF;
+
+    IF p_amount IS NULL OR p_amount <> v_amount THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Payment amount does not match the booking.';
     END IF;
 
     -- Already settled — treat as success so retries stay idempotent.
@@ -208,6 +222,12 @@ proc: BEGIN
         confirmed_at = COALESCE(confirmed_at, NOW()),
         expires_at   = NULL
     WHERE booking_id = p_booking_id;
+
+    INSERT INTO outbox_events (event_id, event_type, aggregate_id, payload)
+    VALUES (UUID(), 'BookingConfirmed', p_booking_id,
+            JSON_OBJECT('bookingId', p_booking_id, 'bookingRef', v_booking_ref,
+                        'userId', v_user_id, 'showId', v_show_id,
+                        'totalAmount', v_amount));
 
     COMMIT;
 END //
@@ -273,6 +293,9 @@ END //
 CREATE PROCEDURE CancelBooking(IN p_booking_id INT)
 proc: BEGIN
     DECLARE v_status VARCHAR(30);
+    DECLARE v_user_id INT;
+    DECLARE v_show_id INT;
+    DECLARE v_booking_ref VARCHAR(24);
 
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
@@ -282,7 +305,8 @@ proc: BEGIN
 
     START TRANSACTION;
 
-    SELECT status INTO v_status
+    SELECT status, user_id, show_id, booking_ref
+      INTO v_status, v_user_id, v_show_id, v_booking_ref
     FROM bookings WHERE booking_id = p_booking_id FOR UPDATE;
 
     IF v_status IS NULL THEN
@@ -299,14 +323,20 @@ proc: BEGIN
     WHERE booking_id = p_booking_id AND is_active = 1;
 
     UPDATE payments
-    SET payment_status = 'Refunded', updated_at = NOW()
+    SET refund_status = 'Pending', refund_error = NULL, updated_at = NOW()
     WHERE booking_id = p_booking_id AND payment_status = 'Success';
 
     UPDATE bookings
-    SET status       = IF(v_status = 'Confirmed', 'Refunded', 'Cancelled'),
+    SET status       = 'Cancelled',
         cancelled_at = NOW(),
         expires_at   = NULL
     WHERE booking_id = p_booking_id;
+
+    INSERT INTO outbox_events (event_id, event_type, aggregate_id, payload)
+    VALUES (UUID(), 'BookingCancelled', p_booking_id,
+            JSON_OBJECT('bookingId', p_booking_id, 'bookingRef', v_booking_ref,
+                        'userId', v_user_id, 'showId', v_show_id,
+                        'refundPending', IF(v_status = 'Confirmed', TRUE, FALSE)));
 
     COMMIT;
 END //

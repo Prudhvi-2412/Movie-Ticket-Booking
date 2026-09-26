@@ -146,8 +146,11 @@ const verifyPayment = asyncHandler(async (req, res) => {
   let method = 'UPI';
   if (gateway.isLive) {
     const payment = await gateway.fetchPayment(paymentId);
-    if (payment.status !== 'captured' && payment.status !== 'authorized') {
+    if (payment.status !== 'captured') {
       throw ApiError.badRequest(`Payment is ${payment.status}, not captured.`);
+    }
+    if (payment.order_id !== orderId || payment.currency !== 'INR') {
+      throw ApiError.badRequest('The gateway payment does not match this order.');
     }
     amount = gateway.toRupees(payment.amount);
     method = payment.method === 'card' ? 'Credit Card'
@@ -231,6 +234,15 @@ const confirmPayment = asyncHandler(async (req, res) => {
   const succeeded = outcome === 'success';
   const resolvedOrder = orderId
     || (await gateway.createOrder(bookingId, Number(booking.total_amount), booking.booking_ref)).orderId;
+  if (!orderId) {
+    await db.query(
+      `INSERT INTO payments (booking_id, payment_method, transaction_id, idempotency_key,
+                             gateway_order_id, amount, payment_status)
+       VALUES (?, ?, ?, ?, ?, ?, 'Pending')`,
+      [bookingId, paymentMethod, `intent_${resolvedOrder}`, `idem_${resolvedOrder}`,
+        resolvedOrder, booking.total_amount]
+    );
+  }
 
   const { rawBody, signature } = gateway.buildWebhookEvent({
     bookingId: Number(bookingId),
@@ -268,9 +280,12 @@ const confirmPayment = asyncHandler(async (req, res) => {
     'SELECT status, booking_ref FROM bookings WHERE booking_id = ?',
     [bookingId]
   );
+  if (result.payload?.applied === false) {
+    throw ApiError.conflict(result.payload.message || 'The payment event was not applied.');
+  }
 
   res.json({
-    success: succeeded,
+    success: succeeded && updated[0].status === 'Confirmed',
     message: succeeded
       ? 'Payment successful. Your booking is confirmed.'
       : 'Payment failed. Your seats have been released.',
@@ -292,7 +307,8 @@ const getPaymentsForBooking = asyncHandler(async (req, res) => {
 
   const payments = await db.query(
     `SELECT payment_id, payment_method, transaction_id, gateway_order_id, amount,
-            payment_status, failure_reason, payment_time
+            payment_status, failure_reason, payment_time,
+            refund_status, refund_id, refund_error, refund_requested_at, refund_completed_at
        FROM payments WHERE booking_id = ? ORDER BY payment_time DESC`,
     [bookingId]
   );

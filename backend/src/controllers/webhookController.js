@@ -1,5 +1,6 @@
 const db = require('../config/db');
 const gateway = require('../services/paymentGateway');
+const { applyRefundOutcome } = require('../services/refundService');
 const {
   settleConfirmedBooking, settleFailedBooking, activeSeatIds
 } = require('../services/bookingSettlement');
@@ -54,7 +55,62 @@ const handlePaymentWebhook = async (req, res, next) => {
 
   const { eventId, eventType } = event;
   const data = event.data || {};
-  const { bookingId, orderId, transactionId, idempotencyKey, amount, paymentMethod, status, failureReason } = data;
+  if (!eventId || !eventType) {
+    return res.status(400).json({ success: false, message: 'Webhook payload is missing required fields.' });
+  }
+  if (eventType?.startsWith('refund.')) {
+    const { paymentId, refundId, amount, status } = data;
+    if (!eventId || !paymentId || !refundId || amount == null) {
+      return res.status(400).json({ success: false, message: 'Refund payload is missing required fields.' });
+    }
+    try {
+      await db.query(
+        `INSERT INTO webhook_logs (event_id, event_type, idempotency_key, payload, status)
+         VALUES (?, ?, ?, ?, 'RECEIVED')`,
+        [eventId, eventType, `refund_${refundId}`, JSON.stringify(event)]
+      );
+    } catch (err) {
+      if (err.code !== 'ER_DUP_ENTRY') return next(err);
+      const retry = await db.query(
+        "UPDATE webhook_logs SET status = 'RECEIVED' WHERE event_id = ? AND status = 'FAILED'",
+        [eventId]
+      );
+      if (retry.affectedRows === 0) {
+        return res.status(200).json({ success: true, duplicate: true });
+      }
+    }
+    try {
+      const applied = await applyRefundOutcome({ paymentId, refundId, amount, status });
+      await db.query(
+        "UPDATE webhook_logs SET status = ?, processed_at = NOW() WHERE event_id = ?",
+        [applied ? 'PROCESSED' : 'IGNORED', eventId]
+      );
+      return res.status(200).json({ success: true, applied });
+    } catch (err) {
+      await db.query(
+        "UPDATE webhook_logs SET status = 'FAILED', error_message = ? WHERE event_id = ?",
+        [String(err.message).slice(0, 500), eventId]
+      ).catch(() => {});
+      return next(err);
+    }
+  }
+
+  if (!['payment.captured', 'payment.failed'].includes(eventType)) {
+    return res.status(200).json({ success: true, applied: false, message: 'Event not handled.' });
+  }
+
+  let { bookingId } = data;
+  const { orderId, transactionId, idempotencyKey, amount, currency,
+    paymentMethod, status, failureReason } = data;
+
+  // Razorpay payment webhooks identify the order, but need not repeat the
+  // notes that were set on the order. Resolve ownership from our intent row.
+  if (orderId) {
+    const intentBooking = await db.query(
+      'SELECT booking_id FROM payments WHERE gateway_order_id = ?', [orderId]
+    );
+    if (intentBooking.length) bookingId = intentBooking[0].booking_id;
+  }
 
   if (!eventId || !bookingId || !idempotencyKey) {
     return res.status(400).json({ success: false, message: 'Webhook payload is missing required fields.' });
@@ -109,6 +165,19 @@ const handlePaymentWebhook = async (req, res, next) => {
       return res.status(200).json({ success: true, message: 'Unknown booking; event recorded.' });
     }
     const booking = bookingRows[0];
+
+    const intent = await db.query(
+      `SELECT payment_id FROM payments
+        WHERE booking_id = ? AND gateway_order_id = ? AND idempotency_key = ?
+          AND amount = ?`,
+      [bookingId, orderId, idempotencyKey, amount]
+    );
+    if (!transactionId || !orderId || amount == null || currency !== 'INR'
+        || Number(amount) !== Number(booking.total_amount) || intent.length === 0) {
+      const error = new Error('Payment order or amount does not match the booking.');
+      error.sqlState = '45000';
+      throw error;
+    }
 
     // Captured before either procedure runs: FailBookingPayment deactivates
     // these rows, so reading them afterwards would find none to release.

@@ -13,6 +13,7 @@ const { apiLimiter } = require('./middleware/rateLimiterMiddleware');
 
 const authRoutes = require('./routes/authRoutes');
 const bookingRoutes = require('./routes/bookingRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const webhookRoutes = require('./routes/webhookRoutes');
 const adminRoutes = require('./routes/adminRoutes');
@@ -117,6 +118,7 @@ app.use('/api/theaters', theatreRouter);
 app.use('/api/shows', showRouter);
 app.use('/api/search', searchRouter);
 app.use('/api/bookings', bookingRoutes);
+app.use('/api/notifications', notificationRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/admin', adminRoutes);
 

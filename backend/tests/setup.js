@@ -10,8 +10,10 @@
  * simulator goes through the same verification, idempotency and state-machine
  * code, so what is asserted here is what production executes.
  */
-delete process.env.RAZORPAY_KEY_ID;
-delete process.env.RAZORPAY_KEY_SECRET;
-delete process.env.RAZORPAY_WEBHOOK_SECRET;
+// Keep empty variables defined: dotenv does not overwrite them with keys from
+// backend/.env, so tests cannot accidentally call a real Razorpay account.
+process.env.RAZORPAY_KEY_ID = '';
+process.env.RAZORPAY_KEY_SECRET = '';
+process.env.RAZORPAY_WEBHOOK_SECRET = '';
 
 process.env.NODE_ENV = 'test';

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Link, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import {
-  MapPin, Menu, X, Ticket, User, LogOut, LayoutDashboard, ChevronDown, Film, Building2
+  MapPin, Menu, X, Ticket, User, LogOut, LayoutDashboard, ChevronDown, Film, Building2, Bell
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useLocationContext } from '../../context/LocationContext';
@@ -12,7 +12,8 @@ import { useClickOutside, cx } from '../ui';
 const NAV_LINKS = [
   { to: '/movies', label: 'Movies', icon: Film },
   { to: '/theatres', label: 'Theatres', icon: Building2 },
-  { to: '/bookings', label: 'My Bookings', icon: Ticket, authOnly: true }
+  { to: '/bookings', label: 'My Bookings', icon: Ticket, authOnly: true },
+  { to: '/notifications', label: 'Notifications', icon: Bell, authOnly: true }
 ];
 
 export function Navbar() {
@@ -149,6 +150,14 @@ export function Navbar() {
                     className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-ink-200 hover:bg-ink-800"
                   >
                     <User className="w-4 h-4 text-ink-400" aria-hidden /> Profile
+                  </Link>
+                  <Link
+                    to="/notifications"
+                    role="menuitem"
+                    onClick={() => setAccountOpen(false)}
+                    className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-ink-200 hover:bg-ink-800"
+                  >
+                    <Bell className="w-4 h-4 text-ink-400" aria-hidden /> Notifications
                   </Link>
                   <button
                     role="menuitem"

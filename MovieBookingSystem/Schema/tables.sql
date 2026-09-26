@@ -274,6 +274,11 @@ CREATE TABLE IF NOT EXISTS payments (
     signature        VARCHAR(255) NULL,
     amount           DECIMAL(10,2) NOT NULL,
     payment_status   ENUM('Pending', 'Success', 'Failed', 'Refunded') NOT NULL DEFAULT 'Pending',
+    refund_status    ENUM('Pending', 'Processing', 'Completed', 'Failed') NULL,
+    refund_id        VARCHAR(100) NULL,
+    refund_error     VARCHAR(500) NULL,
+    refund_requested_at DATETIME NULL,
+    refund_completed_at DATETIME NULL,
     failure_reason   VARCHAR(255) NULL,
     payment_time     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -281,6 +286,7 @@ CREATE TABLE IF NOT EXISTS payments (
         REFERENCES bookings(booking_id) ON DELETE CASCADE,
     UNIQUE KEY uq_payments_transaction (transaction_id),
     UNIQUE KEY uq_payments_idempotency (idempotency_key),
+    UNIQUE KEY uq_payments_refund (refund_id),
     KEY idx_payments_booking (booking_id),
     KEY idx_payments_status (payment_status, payment_time)
 ) ENGINE=InnoDB;

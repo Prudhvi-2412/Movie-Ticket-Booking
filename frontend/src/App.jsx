@@ -21,6 +21,7 @@ import { PaymentPage } from './pages/PaymentPage';
 import { BookingConfirmationPage } from './pages/BookingConfirmationPage';
 import { TicketPage } from './pages/TicketPage';
 import { MyBookingsPage } from './pages/MyBookingsPage';
+import { NotificationsPage } from './pages/NotificationsPage';
 import { ProfilePage } from './pages/ProfilePage';
 import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
@@ -75,6 +76,9 @@ export function App() {
                     } />
                     <Route path="bookings" element={
                       <ProtectedRoute><MyBookingsPage /></ProtectedRoute>
+                    } />
+                    <Route path="notifications" element={
+                      <ProtectedRoute><NotificationsPage /></ProtectedRoute>
                     } />
                     <Route path="bookings/:bookingId/ticket" element={
                       <ProtectedRoute><TicketPage /></ProtectedRoute>

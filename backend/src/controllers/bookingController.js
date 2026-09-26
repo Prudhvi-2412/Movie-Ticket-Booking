@@ -4,7 +4,7 @@ const {
   acquireSeatLocks, verifySeatLocks, releaseSeatLocks, getRemainingLockSeconds
 } = require('../redis/seatLock');
 const { quote } = require('../services/pricingService');
-const { emitBookingCreated, emitBookingCancelled, emitSeatReleased } = require('../kafka/producer');
+const { startRefund } = require('../services/refundService');
 const { ApiError, asyncHandler } = require('../utils/ApiError');
 const logger = require('../utils/logger');
 const { bookingCounter } = require('../utils/metrics');
@@ -18,14 +18,15 @@ const BOOKING_SELECT = `
          sc.screen_number, sc.name AS screen_name, sc.screen_type,
          t.theater_id, t.name AS theater_name, t.location AS theater_locality, t.address AS theater_address,
          l.city,
-         p.transaction_id, p.payment_method, p.payment_status, p.payment_time
+         p.transaction_id, p.payment_method, p.payment_status, p.payment_time, p.refund_status
     FROM bookings b
     JOIN shows s     ON s.show_id = b.show_id
     JOIN movies m    ON m.movie_id = s.movie_id
     JOIN screens sc  ON sc.screen_id = s.screen_id
     JOIN theaters t  ON t.theater_id = sc.theater_id
     JOIN locations l ON l.location_id = t.location_id
-    LEFT JOIN payments p ON p.booking_id = b.booking_id AND p.payment_status = 'Success'
+    LEFT JOIN payments p ON p.booking_id = b.booking_id
+      AND p.payment_status IN ('Success', 'Refunded')
 `;
 
 /** Attaches the seat list to each booking in one extra query rather than N. */
@@ -149,12 +150,13 @@ const createBooking = asyncHandler(async (req, res) => {
 
   let bookingId;
   let bookingRef;
+  const connection = await db.getConnection();
   try {
-    await db.query(
+    await connection.query(
       'CALL CreateBooking(?, ?, CAST(? AS JSON), ?, ?, ?, @booking_id, @booking_ref)',
       [userId, showId, seatsJson, summary.convenienceFee, config.GST_RATE, remaining]
     );
-    const [out] = await db.query('SELECT @booking_id AS booking_id, @booking_ref AS booking_ref');
+    const [[out]] = await connection.query('SELECT @booking_id AS booking_id, @booking_ref AS booking_ref');
     bookingId = out.booking_id;
     bookingRef = out.booking_ref;
   } catch (err) {
@@ -169,13 +171,11 @@ const createBooking = asyncHandler(async (req, res) => {
     }
     if (err.sqlState === '45000') throw ApiError.badRequest(err.message);
     throw err;
+  } finally {
+    connection.release();
   }
 
   bookingCounter.inc({ status: 'pending' });
-
-  await emitBookingCreated({
-    bookingId, bookingRef, userId, showId, seatIds, totalAmount: summary.totalAmount, status: 'Pending'
-  });
 
   logger.info('Booking %s created for user %s (show %s, %d seats)', bookingRef, userId, showId, seatIds.length);
 
@@ -283,25 +283,32 @@ const cancelBooking = asyncHandler(async (req, res) => {
   const seatIds = seatRows.map((r) => r.seat_id);
 
   await db.query('CALL CancelBooking(?)', [bookingId]);
+  if (booking.status === 'Confirmed') {
+    await startRefund(bookingId, booking.booking_ref);
+  }
   // Release without an owner filter: an admin cancelling on a customer's
   // behalf must still be able to free the seats.
   if (seatIds.length) await releaseSeatLocks(booking.show_id, seatIds);
 
   bookingCounter.inc({ status: 'cancelled' });
 
-  await emitBookingCancelled({
-    bookingId: Number(bookingId), userId: booking.user_id, showId: booking.show_id, seatIds
-  });
-  await emitSeatReleased({ showId: booking.show_id, seatIds, reason: 'BOOKING_CANCELLED' });
-
-  const updated = await db.query('SELECT status FROM bookings WHERE booking_id = ?', [bookingId]);
+  const updated = await db.query(
+    `SELECT b.status, p.refund_status FROM bookings b
+      LEFT JOIN payments p ON p.booking_id = b.booking_id AND p.refund_status IS NOT NULL
+      WHERE b.booking_id = ?`, [bookingId]
+  );
 
   res.json({
     success: true,
-    message: updated[0].status === 'Refunded'
-      ? 'Booking cancelled. Your refund has been initiated.'
-      : 'Booking cancelled.',
-    status: updated[0].status
+    message: updated[0].refund_status === 'Completed'
+      ? 'Booking cancelled and refund processed.'
+      : updated[0].refund_status === 'Failed'
+        ? 'Booking cancelled. The refund needs manual attention.'
+        : updated[0].refund_status
+          ? 'Booking cancelled. Your refund is processing.'
+          : 'Booking cancelled.',
+    status: updated[0].status,
+    refundStatus: updated[0].refund_status
   });
 });
 

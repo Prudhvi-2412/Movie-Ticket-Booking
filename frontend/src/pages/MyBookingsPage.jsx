@@ -122,7 +122,11 @@ export function MyBookingsPage() {
 }
 
 function BookingCard({ booking, tab, onCancel }) {
-  const status = bookingStatusMeta(booking.status);
+  const status = booking.refund_status === 'Failed'
+    ? { className: 'badge-danger', label: 'Refund needs attention' }
+    : ['Pending', 'Processing'].includes(booking.refund_status)
+      ? { className: 'badge-info', label: 'Refund processing' }
+      : bookingStatusMeta(booking.status);
   const hoursUntilShow = (new Date(booking.show_time).getTime() - Date.now()) / 3_600_000;
   // Mirrors the server rule so the button is not offered when it would fail.
   const canCancel = booking.status === 'Confirmed' && hoursUntilShow >= 2;
