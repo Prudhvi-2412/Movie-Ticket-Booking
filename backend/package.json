@@ -12,6 +12,7 @@
     "db:setup": "node scripts/migrate.js && node scripts/seed.js",
     "test": "jest --runInBand --detectOpenHandles --forceExit",
     "verify": "node scripts/verifyFlow.js",
+    "benchmark": "node scripts/benchmarkBookings.js",
     "worker:kafka": "node src/kafka/worker.js",
     "worker:outbox": "node src/kafka/outboxDispatcher.js"
   },

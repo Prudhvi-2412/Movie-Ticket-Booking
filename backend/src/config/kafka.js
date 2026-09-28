@@ -44,8 +44,14 @@ const ensureTopics = async () => {
   }
 };
 
-const startKafkaConsumer = async (groupId, handler) => {
+const startKafkaConsumer = async (groupId, handler, onFatal) => {
   const consumer = kafka.consumer({ groupId });
+  consumer.on(consumer.events.CRASH, ({ payload }) => {
+    if (!payload.restart) {
+      logger.error('Kafka consumer %s stopped without restart: %s', groupId, payload.error.message);
+      onFatal?.(payload.error);
+    }
+  });
   await consumer.connect();
   try {
     await consumer.subscribe({ topic: TOPIC, fromBeginning: true });

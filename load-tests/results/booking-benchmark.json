@@ -1,0 +1,208 @@
+{
+  "measuredAt": "2026-09-28T10:45:34.771Z",
+  "api": "http://127.0.0.1:5001",
+  "mode": "local test-mode API; rate limit skipped",
+  "scope": "Redis hold plus MySQL pending booking creation; payment excluded",
+  "runtime": {
+    "platform": "win32 10.0.26200",
+    "cpu": "Intel(R) Core(TM) i7-10750H CPU @ 2.60GHz",
+    "logicalProcessors": 12,
+    "memoryGiB": 15.8,
+    "node": "v22.14.0"
+  },
+  "users": 100,
+  "repeats": 3,
+  "contention": [
+    {
+      "repeat": 1,
+      "contenders": 100,
+      "successfulHolds": 1,
+      "expectedConflicts": 99,
+      "unexpectedResponses": 0,
+      "bookingCreated": 1,
+      "database": {
+        "bookings": 1,
+        "allocations": 1,
+        "distinctSeats": 1
+      },
+      "lockBurstMs": 414,
+      "lockP95Ms": 387.4
+    },
+    {
+      "repeat": 2,
+      "contenders": 100,
+      "successfulHolds": 1,
+      "expectedConflicts": 99,
+      "unexpectedResponses": 0,
+      "bookingCreated": 1,
+      "database": {
+        "bookings": 1,
+        "allocations": 1,
+        "distinctSeats": 1
+      },
+      "lockBurstMs": 329,
+      "lockP95Ms": 310.6
+    },
+    {
+      "repeat": 3,
+      "contenders": 100,
+      "successfulHolds": 1,
+      "expectedConflicts": 99,
+      "unexpectedResponses": 0,
+      "bookingCreated": 1,
+      "database": {
+        "bookings": 1,
+        "allocations": 1,
+        "distinctSeats": 1
+      },
+      "lockBurstMs": 325,
+      "lockP95Ms": 309.1
+    }
+  ],
+  "bookingLoad": [
+    {
+      "repeat": 1,
+      "concurrency": 10,
+      "attempts": 100,
+      "successfulBookings": 100,
+      "errorRate": 0,
+      "database": {
+        "bookings": 100,
+        "allocations": 100,
+        "distinctSeats": 100
+      },
+      "elapsedMs": 1144,
+      "bookingsPerSecond": 87.44,
+      "endToEndP50Ms": 103.9,
+      "endToEndP95Ms": 209.4
+    },
+    {
+      "repeat": 2,
+      "concurrency": 10,
+      "attempts": 100,
+      "successfulBookings": 100,
+      "errorRate": 0,
+      "database": {
+        "bookings": 100,
+        "allocations": 100,
+        "distinctSeats": 100
+      },
+      "elapsedMs": 997,
+      "bookingsPerSecond": 100.31,
+      "endToEndP50Ms": 101.8,
+      "endToEndP95Ms": 131
+    },
+    {
+      "repeat": 3,
+      "concurrency": 10,
+      "attempts": 100,
+      "successfulBookings": 100,
+      "errorRate": 0,
+      "database": {
+        "bookings": 100,
+        "allocations": 100,
+        "distinctSeats": 100
+      },
+      "elapsedMs": 1096,
+      "bookingsPerSecond": 91.28,
+      "endToEndP50Ms": 102.8,
+      "endToEndP95Ms": 139.2
+    },
+    {
+      "repeat": 1,
+      "concurrency": 25,
+      "attempts": 100,
+      "successfulBookings": 100,
+      "errorRate": 0,
+      "database": {
+        "bookings": 100,
+        "allocations": 100,
+        "distinctSeats": 100
+      },
+      "elapsedMs": 1073,
+      "bookingsPerSecond": 93.24,
+      "endToEndP50Ms": 252.1,
+      "endToEndP95Ms": 334.6
+    },
+    {
+      "repeat": 2,
+      "concurrency": 25,
+      "attempts": 100,
+      "successfulBookings": 100,
+      "errorRate": 0,
+      "database": {
+        "bookings": 100,
+        "allocations": 100,
+        "distinctSeats": 100
+      },
+      "elapsedMs": 855,
+      "bookingsPerSecond": 116.98,
+      "endToEndP50Ms": 208.6,
+      "endToEndP95Ms": 263.8
+    },
+    {
+      "repeat": 3,
+      "concurrency": 25,
+      "attempts": 100,
+      "successfulBookings": 100,
+      "errorRate": 0,
+      "database": {
+        "bookings": 100,
+        "allocations": 100,
+        "distinctSeats": 100
+      },
+      "elapsedMs": 982,
+      "bookingsPerSecond": 101.79,
+      "endToEndP50Ms": 233.4,
+      "endToEndP95Ms": 269.3
+    },
+    {
+      "repeat": 1,
+      "concurrency": 50,
+      "attempts": 100,
+      "successfulBookings": 100,
+      "errorRate": 0,
+      "database": {
+        "bookings": 100,
+        "allocations": 100,
+        "distinctSeats": 100
+      },
+      "elapsedMs": 848,
+      "bookingsPerSecond": 117.86,
+      "endToEndP50Ms": 397.3,
+      "endToEndP95Ms": 447.7
+    },
+    {
+      "repeat": 2,
+      "concurrency": 50,
+      "attempts": 100,
+      "successfulBookings": 100,
+      "errorRate": 0,
+      "database": {
+        "bookings": 100,
+        "allocations": 100,
+        "distinctSeats": 100
+      },
+      "elapsedMs": 788,
+      "bookingsPerSecond": 126.88,
+      "endToEndP50Ms": 359.8,
+      "endToEndP95Ms": 416.4
+    },
+    {
+      "repeat": 3,
+      "concurrency": 50,
+      "attempts": 100,
+      "successfulBookings": 100,
+      "errorRate": 0,
+      "database": {
+        "bookings": 100,
+        "allocations": 100,
+        "distinctSeats": 100
+      },
+      "elapsedMs": 827,
+      "bookingsPerSecond": 120.91,
+      "endToEndP50Ms": 352.9,
+      "endToEndP95Ms": 461.6
+    }
+  ]
+}

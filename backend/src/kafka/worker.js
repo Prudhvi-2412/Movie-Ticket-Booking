@@ -4,17 +4,19 @@ const logger = require('../utils/logger');
 const notification = require('./consumers/notificationConsumer');
 const analytics = require('./consumers/analyticsConsumer');
 
+const fatal = () => { process.exitCode = 1; process.kill(process.pid, 'SIGTERM'); };
+
 const start = async () => {
   await ensureTopics();
-  await startKafkaConsumer(notification.GROUP, notification.handleNotificationEvent);
-  await startKafkaConsumer(analytics.GROUP, analytics.handleAnalyticsEvent);
+  await startKafkaConsumer(notification.GROUP, notification.handleNotificationEvent, fatal);
+  await startKafkaConsumer(analytics.GROUP, analytics.handleAnalyticsEvent, fatal);
   logger.info('Kafka booking workers ready');
 };
 
 const shutdown = async () => {
   await shutdownKafka();
   await db.pool.end();
-  process.exit(0);
+  process.exit(process.exitCode || 0);
 };
 
 process.on('SIGTERM', shutdown);

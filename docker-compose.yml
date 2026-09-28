@@ -106,6 +106,8 @@ services:
       dockerfile: backend/Dockerfile
     restart: unless-stopped
     command: ["node", "src/kafka/worker.js"]
+    healthcheck:
+      disable: true
     depends_on:
       mysql:
         condition: service_healthy
@@ -131,6 +133,8 @@ services:
       dockerfile: backend/Dockerfile
     restart: unless-stopped
     command: ["node", "src/kafka/outboxDispatcher.js"]
+    healthcheck:
+      disable: true
     depends_on:
       mysql:
         condition: service_healthy

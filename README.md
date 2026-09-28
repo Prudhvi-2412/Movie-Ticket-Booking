@@ -529,6 +529,7 @@ npm run db:setup     # migrate + seed
 npm run db:reset     # migrate + reseed from scratch
 npm test             # Jest integration suite
 npm run verify       # end-to-end check against a running server
+npm run benchmark    # bounded, DB-verified local booking benchmark
 ```
 
 **Frontend**
@@ -582,13 +583,37 @@ npm run verify                          # against http://localhost:5000
 docker compose exec backend node scripts/verifyFlow.js
 ```
 
-72 checks across 13 sections.
+80 checks across 14 sections (Docker Compose run, September 2026).
 
 ### Load testing
 
-```bash
-k6 run load-tests/k6-seat-booking.js
+The repeatable benchmark provisions isolated users and shows outside the timed
+window. It then measures three 100-customer races for one seat and three
+100-booking runs each at 10, 25, and 50 concurrent clients. Every run checks
+the booking and distinct seat counts in MySQL. It removes its fixtures and
+users afterward. Run it against a **separate local API in test mode** with the
+Compose MySQL and Redis services running:
+
+```powershell
+docker compose up -d mysql redis
+# Terminal 1, from backend/
+$env:NODE_ENV='test'; $env:PORT='5001'; $env:AUTO_MIGRATE='false'; node src/server.js
+# Terminal 2, from backend/
+$env:NODE_ENV='test'; npm run benchmark
 ```
+
+The measured path is Redis seat hold plus MySQL **pending booking creation**;
+payment, Kafka delivery, and sustained traffic are outside this benchmark.
+Test mode skips the per-IP API rate limits, so these numbers represent the
+booking path rather than rate-limit rejections. The September 2026 local run
+produced one booking and 99 expected conflicts in each 100-customer seat race.
+At 50 concurrent clients, all 100 bookings succeeded in each of three runs,
+with a median burst throughput of 120.91 bookings/s and a p95 end-to-end
+latency of 416.4–461.6 ms. See the
+[raw run results](load-tests/results/booking-benchmark.json) for every trial
+and the test machine details. The older `k6-seat-booking.js` is an exploratory
+seat-lock script; it does not verify committed bookings and its rate-limit
+responses should not be presented as a booking throughput result.
 
 ---
 
